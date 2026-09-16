@@ -7,12 +7,11 @@ terraform {
     }
   }
 
-  # Uncomment and configure once you've created a state bucket.
-  # backend "s3" {
-  #   bucket = "your-tf-state-bucket"
-  #   key    = "geo-devops-demo/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  backend "s3" {
+    bucket = "sgavathe-tfstate-390744232980"
+    key    = "geo-devops-demo/terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {

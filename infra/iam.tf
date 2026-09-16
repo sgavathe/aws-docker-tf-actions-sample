@@ -41,7 +41,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 resource "aws_iam_role" "github_actions" {
-  name = "${var.project_name}-github-actions-role"
+  name = "github-actions-ecs-deploy-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -57,7 +57,7 @@ resource "aws_iam_role" "github_actions" {
         }
         StringLike = {
           # Replace with your actual GitHub org/user + repo name
-          "token.actions.githubusercontent.com:sub" = "repo:YOUR_GITHUB_USERNAME/geo-devops-demo:*"
+          "token.actions.githubusercontent.com:sub" = "repo:sgavathe/aws-docker-tf-actions-sample:*"
         }
       }
     }]
@@ -99,6 +99,18 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
         Effect   = "Allow"
         Action   = "iam:PassRole"
         Resource = [aws_iam_role.ecs_execution.arn, aws_iam_role.ecs_task.arn]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::sgavathe-tfstate-390744232980",
+          "arn:aws:s3:::sgavathe-tfstate-390744232980/*"
+        ]
       }
     ]
   })
