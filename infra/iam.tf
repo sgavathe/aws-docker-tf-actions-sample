@@ -57,7 +57,7 @@ resource "aws_iam_role" "github_actions" {
         }
         StringLike = {
           # Replace with your actual GitHub org/user + repo name
-          "token.actions.githubusercontent.com:sub" = "repo:sgavathe/aws-docker-tf-actions-sample:*"
+          "token.actions.githubusercontent.com:sub" = "repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:*"
         }
       }
     }]
