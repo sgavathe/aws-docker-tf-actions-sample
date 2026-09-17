@@ -13,3 +13,7 @@ output "ecr_frontend_url" {
 output "github_actions_role_arn" {
   value = aws_iam_role.github_actions.arn
 }
+
+output "site_url" {
+  value = "https://map.spatialenable.com"
+}

@@ -78,7 +78,7 @@ resource "aws_ecs_task_definition" "frontend" {
     essential = true
     portMappings = [{ containerPort = 80, protocol = "tcp" }]
     environment = [
-      { name = "API_BASE_URL", value = "http://${aws_lb.main.dns_name}/api" }
+      { name = "API_BASE_URL", value = "https://map.spatialenable.com/api" }
     ]
     logConfiguration = {
       logDriver = "awslogs"
