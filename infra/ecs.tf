@@ -116,6 +116,10 @@ resource "aws_ecs_service" "frontend" {
 # ---- Load balancer: single ALB, path-based routing to each service ----
 
 resource "aws_lb" "main" {
+  depends_on = [
+    aws_internet_gateway.main,
+    aws_route_table_association.public,
+  ]
   name               = "${var.project_name}-alb"
   internal           = false
   load_balancer_type = "application"
