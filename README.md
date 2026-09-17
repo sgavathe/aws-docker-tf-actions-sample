@@ -73,17 +73,3 @@ Then open http://localhost:8081 - it should list three locations fetched from th
 5. From then on, every push to `main` triggers `.github/workflows/deploy.yml`, which
    builds both images, pushes to ECR, and re-applies Terraform with the new image tags -
    updating the ECS services automatically.
-
-## Notes / talking points for interviews
-
-- Uses the account's **default VPC** to keep the demo runnable in ~15 minutes; a real
-  production setup would use a dedicated VPC with private subnets for the tasks and a
-  NAT gateway, or no NAT at all if using VPC endpoints for ECR/CloudWatch.
-- **GitHub OIDC federation** replaces static AWS access keys in CI - this is the current
-  AWS-recommended pattern and a good thing to mention if asked about CI/CD security.
-- IAM roles are split into **execution role** (ECS agent: pull image, write logs) vs.
-  **task role** (app code: whatever AWS APIs your app itself needs) - a common point of
-  confusion worth being able to explain clearly.
-- The frontend injects its backend URL **at container runtime** (via `env.js` + envsubst)
-  rather than baking it in at build time, so the same image can be promoted across
-  environments without a rebuild - a real cloud-native pattern, not just a demo shortcut.
