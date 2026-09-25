@@ -3,10 +3,12 @@ WORKDIR /src
 COPY backend.csproj .
 RUN dotnet restore
 COPY . .
-RUN dotnet publish -c Release -o /app
+RUN dotnet publish -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 COPY --from=build /app .
 EXPOSE 8080
+# Run as the non-root user that ships in the .NET 8 images.
+USER app
 ENTRYPOINT ["dotnet", "backend.dll"]

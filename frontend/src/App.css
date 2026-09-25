@@ -1,0 +1,140 @@
+:root {
+  --harbor: #0f2d46;      /* panel background, deep harbor navy */
+  --harbor-2: #173c5a;    /* raised surfaces on the panel */
+  --chart: #dce9ef;       /* nautical-chart water tint */
+  --signal: #f5f8fa;      /* primary text on navy */
+  --mist: #a9bfcf;        /* secondary text on navy */
+  --cg-red: #c8102e;      /* Coast Guard racing-stripe red: used once, boldly */
+  --cg-blue: #2f6fa8;
+
+  --font: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Barlow Semi Condensed", "Barlow", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: var(--font); font-size: 15px; line-height: 1.45; color: var(--signal); background: var(--harbor); }
+
+.app { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+
+/* ---------- Side panel ---------- */
+.panel > * { flex-shrink: 0; }
+.panel {
+  background: var(--harbor);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.brand { position: relative; padding: 28px 24px 20px; overflow: hidden; }
+/* The one bold element: a USCG-style diagonal racing stripe. */
+.stripe {
+  position: absolute; top: -30px; right: 28px;
+  width: 26px; height: 170px;
+  background: var(--cg-red);
+  transform: rotate(28deg);
+  box-shadow: -14px 0 0 -6px var(--signal), -26px 0 0 -10px var(--cg-blue);
+}
+.brand h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 34px;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+.lede { margin: 0; color: var(--mist); max-width: 24ch; }
+
+.block { padding: 18px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.block h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 19px;
+  margin: 0 0 12px;
+}
+
+.field { display: grid; gap: 6px; margin-bottom: 12px; }
+.field > span { font-size: 13px; color: var(--mist); }
+select {
+  font: inherit; color: var(--signal);
+  background: var(--harbor-2);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+input[type="range"] { accent-color: var(--cg-red); width: 100%; }
+.check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; font-size: 14px; }
+.check input { accent-color: var(--cg-red); margin-top: 3px; }
+
+.hint, .where, .muted { font-size: 13px; color: var(--mist); margin: 0 0 8px; }
+.weather {
+  font-size: 14px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--harbor-2);
+  border-left: 3px solid var(--cg-blue);
+}
+
+.hits, .risk { list-style: none; margin: 0; padding: 0; }
+.hit, .risk-row {
+  width: 100%;
+  display: flex; align-items: flex-start; gap: 10px;
+  text-align: left; font: inherit; color: inherit;
+  background: none; border: 0; cursor: pointer;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.hit:hover, .risk-row:hover { background: rgba(255, 255, 255, 0.04); }
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; }
+.hit-main { display: grid; flex: 1; }
+.hit-title { font-weight: 600; }
+.hit-sub { font-size: 13px; color: var(--mist); }
+.hit-dist { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--mist); white-space: nowrap; }
+
+.risk-row { justify-content: space-between; font-size: 14px; }
+.score { font-variant-numeric: tabular-nums; color: #ff8a9b; white-space: nowrap; }
+
+.error {
+  margin: 0 24px 12px;
+  padding: 10px 12px;
+  background: rgba(200, 16, 46, 0.18);
+  border-left: 3px solid var(--cg-red);
+  font-size: 14px;
+}
+
+.foot {
+  margin-top: auto;
+  padding: 14px 24px 20px;
+  display: flex; flex-wrap: wrap; gap: 6px 16px;
+  font-size: 12px; color: var(--mist);
+}
+.foot a { color: var(--signal); }
+
+/* ---------- Map ---------- */
+.stage { position: relative; background: var(--chart); min-height: 0; }
+.map { position: absolute; inset: 0; }
+.legend {
+  position: absolute; left: 12px; bottom: 28px;
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  background: rgba(245, 248, 250, 0.94);
+  color: #13232f;
+  font-size: 13px;
+  border-radius: 4px;
+}
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+
+/* ---------- Accessibility ---------- */
+:focus-visible { outline: 2px solid #ffd166; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ---------- Small screens: map on top, panel below ---------- */
+@media (max-width: 800px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; }
+  .stage { order: -1; height: 55vh; }
+  .panel { overflow: visible; }
+}
