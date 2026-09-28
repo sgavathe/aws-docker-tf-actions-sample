@@ -54,7 +54,7 @@ resource "aws_lb_listener" "https" {
 
 resource "aws_lb_listener_rule" "backend_https" {
   listener_arn = aws_lb_listener.https.arn
-  priority     = 100
+  priority     = 10
 
   action {
     type             = "forward"
