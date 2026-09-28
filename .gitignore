@@ -4,3 +4,9 @@ dist/
 *.tfstate
 *.tfstate.backup
 .DS_Store
+frontend/node_modules/
+__MACOSX/
+.vs/
+*.user
+bin/
+obj/
