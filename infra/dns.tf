@@ -43,7 +43,7 @@ resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.main.arn
   port              = 443
   protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = aws_acm_certificate_validation.map.certificate_arn
 
   default_action {
@@ -54,7 +54,7 @@ resource "aws_lb_listener" "https" {
 
 resource "aws_lb_listener_rule" "backend_https" {
   listener_arn = aws_lb_listener.https.arn
-  priority     = 100
+  priority     = 10
 
   action {
     type             = "forward"
