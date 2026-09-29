@@ -24,3 +24,6 @@ coverage/
 .DS_Store
 __MACOSX/
 trivy-report.txt
+
+# scan output (any spelling)
+*-report.txt
