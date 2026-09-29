@@ -62,10 +62,13 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
+    description = "Restrict outbound traffic from ALB to the internal VPC network"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    # cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [aws_vpc.main.cidr_block] 
+
   }
 }
 
@@ -75,16 +78,21 @@ resource "aws_security_group" "tasks" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 0
-    to_port         = 65535
+    description     = "App traffic from the ALB only"
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
 
+  # Tasks run in public subnets (no NAT, cost trade-off for a demo) and need
+  # HTTPS egress for ECR image pulls, CloudWatch Logs, and api.weather.gov.
+  # trivy:ignore:AVD-AWS-0104
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS out for ECR, CloudWatch Logs, and weather API"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }

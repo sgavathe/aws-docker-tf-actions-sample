@@ -14,17 +14,14 @@ env:
   PROJECT_NAME: geo-devops-demo
 
 jobs:
-  # ---- Stage 1: show what Terraform intends to do, no changes made ----
+  # ---- Stage 1: plan + policy gate, no changes made ----
   plan:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug OIDC token claims
-        run: |
-          IDTOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "$IDTOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -38,16 +35,22 @@ jobs:
           terraform_version: "1.9.0"
 
       - name: Terraform init
-        working-directory: infra
         run: terraform init
 
       - name: Terraform plan
-        working-directory: infra
-        run: terraform plan
+        run: |
+          BE=$(aws ecs describe-task-definition --task-definition $PROJECT_NAME-backend  --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
+          FE=$(aws ecs describe-task-definition --task-definition $PROJECT_NAME-frontend --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
+          terraform plan -input=false -out=tfplan -var="backend_image=$BE" -var="frontend_image=$FE"
+          terraform show -json tfplan > tfplan.json
 
-  # ---- Stage 2: build/push the backend image, deploy backend ECS service
-  #      (this also creates all shared infra: VPC, ALB, cluster, IAM, since
-  #      -target pulls in whatever aws_ecs_service.backend depends on) ----
+      - name: OPA policy check (Conftest)
+        run: |
+          VERSION=0.59.0
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${VERSION}/conftest_${VERSION}_Linux_x86_64.tar.gz" | tar xz conftest
+          ./conftest test tfplan.json -p ../policy/
+
+  # ---- Stage 2: build/push backend image, APPLY backend service + shared infra ----
   deploy-backend:
     needs: plan
     runs-on: ubuntu-latest
@@ -94,16 +97,14 @@ jobs:
           docker push "$IMAGE"
           echo "backend_image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy backend service (creates shared infra + backend ECS service)
+      - name: Terraform apply - backend service (creates shared infra + backend ECS service)
         working-directory: infra
         run: |
           terraform apply -auto-approve \
             -target=aws_ecs_service.backend \
             -var="backend_image=${{ steps.image.outputs.backend_image }}"
 
-  # ---- Stage 3: build/push the frontend image, deploy frontend ECS service
-  #      (shared infra already exists from stage 2, so this only adds the
-  #      frontend-specific resources) ----
+  # ---- Stage 3: build/push frontend image, APPLY everything, smoke test ----
   deploy-frontend:
     needs: deploy-backend
     runs-on: ubuntu-latest
@@ -143,9 +144,18 @@ jobs:
           docker push "$IMAGE"
           echo "frontend_image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy frontend service + full convergence apply
+      - name: Terraform apply - frontend service + full convergence
         working-directory: infra
         run: |
           terraform apply -auto-approve \
             -var="backend_image=${{ needs.deploy-backend.outputs.backend_image }}" \
             -var="frontend_image=${{ steps.image.outputs.frontend_image }}"
+
+      - name: Smoke test
+        run: |
+          set -e
+          curl -fsS --retry 5 --retry-delay 10 https://map.spatialenable.com/health
+          curl -fsS https://map.spatialenable.com/api/ports > /dev/null
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://map.spatialenable.com)
+          [ "$code" = "301" ] || { echo "Expected 301 redirect, got $code"; exit 1; }
+          echo "Smoke test passed"
