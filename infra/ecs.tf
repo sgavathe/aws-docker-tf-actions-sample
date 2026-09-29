@@ -10,17 +10,17 @@ resource "aws_ecs_cluster" "main" {
 
 # KMS key cost avoid, dont implement in real work
 # tfsec:ignore:aws-logs-log-group-customer-key
-resource "aws_cloudwatch_log_group" "backend" {
-  name              = "/ecs/${var.project_name}-backend"
-  retention_in_days = 14
-}
+# resource "aws_cloudwatch_log_group" "backend" {
+#   name              = "/ecs/${var.project_name}-backend"
+#   retention_in_days = 14
+# }
 
-# KMS key cost avoid, dont implement in real work
-# tfsec:ignore:aws-logs-log-group-customer-key
-resource "aws_cloudwatch_log_group" "frontend" {
-  name              = "/ecs/${var.project_name}-frontend"
-  retention_in_days = 14
-}
+# # KMS key cost avoid, dont implement in real work
+# # tfsec:ignore:aws-logs-log-group-customer-key
+# resource "aws_cloudwatch_log_group" "frontend" {
+#   name              = "/ecs/${var.project_name}-frontend"
+#   retention_in_days = 14
+# }
 
 # ---- Backend task + service ----
 
@@ -55,6 +55,25 @@ resource "aws_ecs_service" "backend" {
   task_definition = aws_ecs_task_definition.backend.arn
   desired_count   = 1
   launch_type     = "FARGATE"
+
+ # Zero-downtime rollout: start the new task, keep the old one until the new one is healthy
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 60
+  wait_for_steady_state              = true
+
+  # Roll back automatically if the new task crashes or fails the ALB health check
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+ # Roll back if the new task passes /health but starts returning 5xx
+  alarms {
+    alarm_names = [aws_cloudwatch_metric_alarm.backend_5xx.alarm_name]
+    enable      = true
+    rollback    = true
+  }
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
@@ -109,6 +128,25 @@ resource "aws_ecs_service" "frontend" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # Zero-downtime rollout: start the new task, keep the old one until the new one is healthy
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 60
+  wait_for_steady_state              = true
+
+  # Roll back automatically if the new task crashes or fails the ALB health check
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # Roll back if the new task starts returning 5xx
+  alarms {
+    alarm_names = [aws_cloudwatch_metric_alarm.frontend_5xx.alarm_name]
+    enable      = true
+    rollback    = true
+  }
+
   network_configuration {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.tasks.id]
@@ -155,7 +193,8 @@ resource "aws_lb_target_group" "backend" {
 }
 
 resource "aws_lb_target_group" "frontend" {
-  name        = "${var.project_name}-frontend-tg"
+  # name        = "${var.project_name}-frontend-tg"
+  name_prefix = "fe-" 
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
@@ -184,9 +223,17 @@ resource "aws_lb_listener" "http" {
 
   # Fix AWS-0054 (CRITICAL): If you add SSL certificates later, switch this block 
   # to a standard redirect block to avoid passing raw payload packets over port 80.
+  # default_action {
+  #   type             = "forward"
+  #   target_group_arn = aws_lb_target_group.frontend.arn
+  # }
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.frontend.arn
+    type = "redirect"
+    redirect {
+      protocol    = "HTTPS"
+      port        = "443"
+      status_code = "HTTP_301"
+    }
   }
 }
 

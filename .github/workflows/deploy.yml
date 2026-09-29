@@ -44,14 +44,14 @@ jobs:
       - name: Terraform plan
         working-directory: infra
         run: |
-          terraform plan
+          terraform plan -input=false -out=tfplan
           terraform show -json tfplan > tfplan.json
 
       - name: Run Open Policy Agent (Conftest) Scan
         uses: open-policy-agent/conftest-action@v1
         with:
-          files: tfplan.json
-          policy: policy/ # Points to the folder containing your .rego files          
+          files: infra/tfplan.json
+          policy: policy # Points to the folder containing your .rego files          
 
   # ---- Stage 2: build/push the backend image, deploy backend ECS service
   #      (this also creates all shared infra: VPC, ALB, cluster, IAM, since
