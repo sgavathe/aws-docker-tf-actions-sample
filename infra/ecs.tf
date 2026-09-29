@@ -10,17 +10,17 @@ resource "aws_ecs_cluster" "main" {
 
 # KMS key cost avoid, dont implement in real work
 # tfsec:ignore:aws-logs-log-group-customer-key
-# resource "aws_cloudwatch_log_group" "backend" {
-#   name              = "/ecs/${var.project_name}-backend"
-#   retention_in_days = 14
-# }
+resource "aws_cloudwatch_log_group" "backend" {
+  name              = "/ecs/${var.project_name}-backend"
+  retention_in_days = 14
+}
 
 # # KMS key cost avoid, dont implement in real work
 # # tfsec:ignore:aws-logs-log-group-customer-key
-# resource "aws_cloudwatch_log_group" "frontend" {
-#   name              = "/ecs/${var.project_name}-frontend"
-#   retention_in_days = 14
-# }
+resource "aws_cloudwatch_log_group" "frontend" {
+  name              = "/ecs/${var.project_name}-frontend"
+  retention_in_days = 14
+}
 
 # ---- Backend task + service ----
 
