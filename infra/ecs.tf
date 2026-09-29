@@ -221,12 +221,6 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
 
-  # Fix AWS-0054 (CRITICAL): If you add SSL certificates later, switch this block 
-  # to a standard redirect block to avoid passing raw payload packets over port 80.
-  # default_action {
-  #   type             = "forward"
-  #   target_group_arn = aws_lb_target_group.frontend.arn
-  # }
   default_action {
     type = "redirect"
     redirect {
