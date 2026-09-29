@@ -185,9 +185,16 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
         Action = [
           "cloudwatch:PutMetricAlarm",
           "cloudwatch:DeleteAlarms",
-          "cloudwatch:TagResource"
+          "cloudwatch:TagResource",
+          "cloudwatch:ListTagsForResource"
         ]
         Resource = "arn:aws:cloudwatch:${local.region}:${local.acct}:alarm:${var.project_name}-*"
+      },
+      {
+        "Sid": "AlarmsRead",
+        "Effect": "Allow",
+        "Action": "cloudwatch:DescribeAlarms",
+        "Resource": "*"
       },
       # --- Pass only the two ECS roles ---
       {
