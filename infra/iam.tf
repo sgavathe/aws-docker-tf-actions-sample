@@ -1,3 +1,12 @@
+locals {
+  acct       = "390744232980"
+  region     = var.aws_region
+  ecr_repos  = "arn:aws:ecr:${local.region}:${local.acct}:repository/${var.project_name}-*"
+  elb        = "arn:aws:elasticloadbalancing:${local.region}:${local.acct}"
+  alb_name   = "${var.project_name}-alb"
+  ecs        = "arn:aws:ecs:${local.region}:${local.acct}"
+}
+
 # Execution role: used by ECS agent to pull images from ECR and write logs.
 resource "aws_iam_role" "ecs_execution" {
   name = "${var.project_name}-ecs-execution-role"
@@ -68,45 +77,130 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
   name = "${var.project_name}-github-actions-deploy-policy"
   role = aws_iam_role.github_actions.id
 
-  policy = jsonencode({
+    policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # --- Can't be scoped: ECR login token is account-level ---
       {
+        Sid      = "EcrLogin"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      # --- Push images + repo settings: only this project's repos ---
+      {
+        Sid    = "EcrRepos"
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
           "ecr:PutImage",
           "ecr:InitiateLayerUpload",
           "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload"
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImageTagMutability",
+          "ecr:PutImageScanningConfiguration"
         ]
-        Resource = "*"
+        Resource = local.ecr_repos
       },
+      # --- ECS: only this project's cluster, services, task definitions ---
       {
+        Sid    = "EcsProjectResources"
         Effect = "Allow"
         Action = [
           "ecs:UpdateService",
           "ecs:DescribeServices",
+          "ecs:UpdateCluster",
+          "ecs:UpdateClusterSettings",
+          "ecs:TagResource"
+        ]
+        Resource = [
+          "${local.ecs}:cluster/${var.project_name}-cluster",
+          "${local.ecs}:service/${var.project_name}-cluster/*",
+          "${local.ecs}:task-definition/${var.project_name}-*:*"
+        ]
+      },
+      # --- Can't be scoped: task definition register/describe/deregister are
+      #     account-level in ECS. Deregistering a revision does not stop running tasks. ---
+      {
+        Sid    = "EcsTaskDefinitions"
+        Effect = "Allow"
+        Action = [
+          "ecs:RegisterTaskDefinition",
           "ecs:DescribeTaskDefinition",
-          "ecs:RegisterTaskDefinition"
+          "ecs:DeregisterTaskDefinition"
         ]
         Resource = "*"
       },
+      # --- ALB: only this load balancer, its listeners/rules, and our target groups ---
       {
+        Sid    = "AlbProjectResources"
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:ModifyLoadBalancerAttributes",
+          "elasticloadbalancing:ModifyListener",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:SetRulePriorities",
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:ModifyTargetGroup",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
+          "elasticloadbalancing:AddTags"
+        ]
+        Resource = [
+          "${local.elb}:loadbalancer/app/${local.alb_name}/*",
+          "${local.elb}:listener/app/${local.alb_name}/*",
+          "${local.elb}:listener-rule/app/${local.alb_name}/*",
+          "${local.elb}:targetgroup/${var.project_name}-*/*",
+          "${local.elb}:targetgroup/fe-*/*"
+        ]
+      },
+      # --- Network: security groups and subnets, but ONLY inside this project's VPC ---
+      {
+        Sid    = "NetworkInProjectVpc"
+        Effect = "Allow"
+        Action = [
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupEgress",
+          "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+          "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+          "ec2:ModifySubnetAttribute"
+        ]
+        Resource = [
+          "arn:aws:ec2:${local.region}:${local.acct}:security-group/*",
+          "arn:aws:ec2:${local.region}:${local.acct}:subnet/*"
+        ]
+        Condition = {
+          ArnEquals = { "ec2:Vpc" = aws_vpc.main.arn }
+        }
+      },
+      # --- Alarms: only ones named for this project ---
+      {
+        Sid    = "ProjectAlarms"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricAlarm",
+          "cloudwatch:DeleteAlarms",
+          "cloudwatch:TagResource"
+        ]
+        Resource = "arn:aws:cloudwatch:${local.region}:${local.acct}:alarm:${var.project_name}-*"
+      },
+      # --- Pass only the two ECS roles ---
+      {
+        Sid      = "PassEcsRoles"
         Effect   = "Allow"
         Action   = "iam:PassRole"
         Resource = [aws_iam_role.ecs_execution.arn, aws_iam_role.ecs_task.arn]
       },
+      # --- Terraform state bucket only ---
       {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
-        ]
+        Sid      = "TfState"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
         Resource = [
           "arn:aws:s3:::sgavathe-tfstate-390744232980",
           "arn:aws:s3:::sgavathe-tfstate-390744232980/*"
