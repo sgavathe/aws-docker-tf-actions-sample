@@ -13,6 +13,13 @@
     <PackageReference Include="Microsoft.ML" Version="3.0.1" />
     <!-- OpenAPI/Swagger UI served at /api/swagger -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <!-- Reads the published dependency graph from S3 (serverless stack) -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Synthetic sample graph, used when no published graph is configured -->
+    <Content Update="Data\ci-graph.sample.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

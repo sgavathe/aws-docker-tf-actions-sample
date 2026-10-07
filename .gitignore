@@ -27,3 +27,11 @@ trivy-report.txt
 
 # scan output (any spelling)
 *-report.txt
+
+# infrastructure graph pipeline
+build/
+osm/
+*.osm.pbf
+__pycache__/
+.pytest_cache/
+.venv/

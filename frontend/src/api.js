@@ -6,8 +6,8 @@ const API_BASE =
   "http://localhost:8080";
 
 /** Fetch JSON and return { data, requestId }. Throws with the API's ProblemDetails message. */
-async function getJson(path, { signal } = {}) {
-  const res = await fetch(`${API_BASE}${path}`, { signal });
+async function getJson(path, { signal, init } = {}) {
+  const res = await fetch(`${API_BASE}${path}`, { ...init, signal });
   const requestId = res.headers.get("X-Correlation-ID");
   const body = await res.json().catch(() => null);
 
@@ -19,6 +19,26 @@ async function getJson(path, { signal } = {}) {
     throw err;
   }
   return { data: body, requestId };
+}
+
+/** Hex SHA-256 of a string (Web Crypto; available on https and localhost). */
+async function sha256Hex(text) {
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * POST JSON. In the serverless stack CloudFront signs requests to the Lambda Function URL
+ * (Origin Access Control), and Lambda only accepts signed POST bodies when the viewer
+ * sends the body's SHA-256 in x-amz-content-sha256. Harmless everywhere else.
+ */
+async function postJson(path, body, { signal } = {}) {
+  const text = JSON.stringify(body);
+  const headers = { "Content-Type": "application/json" };
+  const hash = await sha256Hex(text);
+  if (hash) headers["x-amz-content-sha256"] = hash;
+  return getJson(path, { signal, init: { method: "POST", headers, body: text } });
 }
 
 const qs = (params) =>
@@ -34,6 +54,10 @@ export const api = {
     getJson(`/api/incidents/nearby?${qs({ lat, lon, radiusNm, type })}`, opts),
   hotspots: (k) => getJson(`/api/hotspots?${qs({ k })}`),
   weather: ({ lat, lon }, opts) => getJson(`/api/weather?${qs({ lat, lon })}`, opts),
+
+  // Critical-infrastructure dependency graph (see pipeline/ and InfrastructureEndpoints.cs)
+  infraGraph: (opts) => getJson("/api/infrastructure/graph", opts),
+  impact: (area, opts) => postJson("/api/infrastructure/impact", { area }, opts),
 };
 
 export const TYPE_COLORS = {

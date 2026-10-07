@@ -16,6 +16,7 @@ builder.Services.AddSingleton<IHotspotService, HotspotService>();               
 builder.Services.AddScoped<RequestContext>();                                     // per-request correlation id
 builder.Services.AddScoped<IIncidentService, IncidentService>();                  // per-request business logic
 builder.Services.AddTransient<QueryValidator>();                                  // stateless helper
+builder.Services.AddSingleton<IInfrastructureGraphProvider, InfrastructureGraphProvider>(); // graph cached in memory
 
 // Typed HttpClient via IHttpClientFactory (pooled handlers, central config).
 builder.Services.AddHttpClient<WeatherClient>(client =>
@@ -31,6 +32,9 @@ builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 builder.Services.AddProblemDetails();   // RFC 7807 error bodies for unhandled exceptions
+// gzip/brotli for JSON. The infrastructure graph shrinks ~5x, which also keeps it well
+// under Lambda's 6 MB response limit in the serverless stack.
+builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -50,6 +54,7 @@ var app = builder.Build();
 // 2) MIDDLEWARE PIPELINE -- order matters: each piece wraps everything after it.
 // ---------------------------------------------------------------------------
 app.UseExceptionHandler();                        // outermost: catches anything below
+app.UseResponseCompression();
 app.UseMiddleware<CorrelationIdMiddleware>();     // tag every request + log line
 app.UseCors();
 
@@ -69,6 +74,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "geo-
    .ExcludeFromDescription();
 
 app.MapIncidentEndpoints();   // minimal APIs  (Endpoints/IncidentEndpoints.cs)
+app.MapInfrastructureEndpoints(); // dependency graph + impact analysis (Endpoints/InfrastructureEndpoints.cs)
 app.MapControllers();         // controllers   (Controllers/HotspotsController.cs)
 
 // Port is configurable for local dev (e.g., PORT=5080); ECS uses the 8080 default.

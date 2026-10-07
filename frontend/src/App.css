@@ -138,3 +138,24 @@ input[type="range"] { accent-color: var(--cg-red); width: 100%; }
   .stage { order: -1; height: 55vh; }
   .panel { overflow: visible; }
 }
+
+/* ---------- View switcher (shared by Harbor Watch and Grid Cascade) ---------- */
+.views {
+  display: flex;
+  gap: 4px;
+  padding: 12px 24px 0;
+}
+.views a {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: var(--mist);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.views a:hover { color: var(--signal); border-color: rgba(255, 255, 255, 0.16); }
+.views a[aria-current="page"] { color: var(--signal); background: var(--harbor-2); border-color: rgba(255, 255, 255, 0.16); }
+.brand { padding-top: 16px; }

@@ -16,6 +16,10 @@ env:
 jobs:
   # ---- Stage 1: plan + policy gate, no changes made ----
   plan:
+    # Skipped on push when the repo variable DEPLOY_TARGET = "serverless" (see
+    # serverless/README.md); later jobs need this one, so they skip too.
+    # Manual runs always deploy ECS - that's how you switch back.
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_TARGET != 'serverless'
     runs-on: ubuntu-latest
     defaults:
       run:
