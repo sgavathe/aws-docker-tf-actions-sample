@@ -35,3 +35,16 @@ osm/
 __pycache__/
 .pytest_cache/
 .venv/
+
+# never commit: keys, certificates, state, real data (checked by scripts/security/check-sensitive.sh)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.tfvars
+!*.tfvars.example
+kubeconfig*
+ci-graph.json
+checkov.sarif

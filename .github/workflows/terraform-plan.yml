@@ -1,15 +1,10 @@
 name: PR Checks
 
+# No path filter: build-test and plan are required checks, and a required check that
+# never starts blocks the PR forever.
 on:
   pull_request:
     branches: [main]
-    # paths:
-    #   - "infra/**"
-    #   - "policy/**"
-    #   - "backend/**"
-    #   - "frontend/**"
-    #   - "tests/**"
-    #   - ".github/workflows/**"
 
 permissions:
   id-token: write
@@ -20,7 +15,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -41,7 +36,7 @@ jobs:
       run:
         working-directory: infra
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4

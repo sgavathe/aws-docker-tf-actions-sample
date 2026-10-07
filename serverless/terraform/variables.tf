@@ -61,7 +61,7 @@ variable "log_retention_days" {
 }
 
 variable "github_oidc_subs" {
-  description = "OIDC 'sub' values allowed to assume the serverless deploy role"
+  description = "OIDC 'sub' values allowed to assume the serverless deploy role (main branch only)"
   type        = list(string)
   default     = ["repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:ref:refs/heads/main"]
 }

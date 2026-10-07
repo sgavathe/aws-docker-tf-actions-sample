@@ -48,6 +48,7 @@ resource "aws_security_group" "alb" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
+    description = "HTTP from anywhere, redirected to HTTPS by the listener"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -55,6 +56,7 @@ resource "aws_security_group" "alb" {
   }
 
   ingress {
+    description = "HTTPS from anywhere"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -95,4 +97,9 @@ resource "aws_security_group" "tasks" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+# Lock down the VPC's default security group: nothing uses it, so it allows nothing.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
 }

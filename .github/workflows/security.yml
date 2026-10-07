@@ -1,0 +1,75 @@
+name: Security
+
+# Runs on every PR and push to main (no path filter, so it can be a required check),
+# plus weekly so new scanner rules catch existing code.
+#   secrets    gitleaks over the full git history: API keys, tokens, private keys, passwords
+#   sensitive  handling markings (PCII, CUI, FOUO, TLP:AMBER/RED, LES, SSI), key/state/env files,
+#              office/PDF docs and archives, real infrastructure graphs, files over 5 MB
+#   iac        Checkov static scan of infra/ and serverless/terraform/ (accepted risks: .checkov.yaml)
+#   policy     unit tests for the OPA rules that terraform-plan.yml applies to the ECS plan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 6 * * 1"   # Mondays 06:41 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # whole history, not just the latest commit
+      - name: gitleaks
+        run: |
+          VERSION=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+          ./gitleaks git --redact --verbose --exit-code 1 .
+
+  sensitive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Markings, key files, documents, real graphs, large files
+        run: scripts/security/check-sensitive.sh --history
+
+  iac:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write      # findings also appear under the repo's Security tab
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Checkov
+        run: |
+          pip install --quiet checkov==3.3.26
+          checkov --config-file .checkov.yaml -d infra -d serverless/terraform \
+            -o cli -o sarif --output-file-path console,checkov.sarif
+      - name: Upload findings to the Security tab
+        if: always() && hashFiles('checkov.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: checkov.sarif
+          category: checkov
+
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: OPA policy unit tests
+        run: |
+          VERSION=0.59.0
+          curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${VERSION}/conftest_${VERSION}_Linux_x86_64.tar.gz" | tar xz conftest
+          ./conftest verify -p policy
