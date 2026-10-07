@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { LINK_TYPES, SECTORS, STATUS, kindLabel, rgba, sectorColor, sectorLabel } from "./sectors.js";
+import { describeAssets } from "./assetDetails.js";
 
 const ASSET_POPUP = {
   title: "{name}",
@@ -8,7 +9,7 @@ const ASSET_POPUP = {
 
 const IMPACT_POPUP = {
   title: "{name}",
-  content: "<b>{statusLabel}</b>, hop {hop}<br/>{cause}<br/>{kindLabel} ({sectorLabel})",
+  content: "<b>{statusLabel}</b>, hop {hop}<br/>{cause}<br/>{kindLabel} ({sectorLabel}){detail}",
 };
 
 const DRAW_SYMBOL = {
@@ -151,6 +152,10 @@ const CascadeMap = forwardRef(function CascadeMap(
       },
     });
 
+    // Depends on / supplies / coordinates / OSM link, shared with the impact popups.
+    const details = describeAssets(graph);
+    esri.current.details = details;
+
     const assets = new FeatureLayer({
       title: "Infrastructure",
       source: graph.nodes.map((n, i) => new Graphic({
@@ -162,12 +167,7 @@ const CascadeMap = forwardRef(function CascadeMap(
           sector: n.sector,
           sectorLabel: sectorLabel(n.sector),
           kindLabel: kindLabel(n.kind),
-          detail: [
-            n.voltageKv ? `<br/>${n.voltageKv} kV` : "",
-            n.outputMw ? `<br/>${n.outputMw} MW` : "",
-            n.source ? `<br/>Power source: ${n.source}` : "",
-            n.backup?.length ? `<br/>Backup for: ${n.backup.join(", ")}` : "",
-          ].join(""),
+          detail: details.get(n.id) ?? "",
         },
       })),
       objectIdField: "oid",
@@ -280,6 +280,7 @@ const CascadeMap = forwardRef(function CascadeMap(
           name: i.name, hop: i.hop, cause: i.cause,
           statusLabel: STATUS[i.status].label,
           kindLabel: kindLabel(i.kind), sectorLabel: sectorLabel(i.sector),
+          detail: esri.current.details?.get(i.id) ?? "",
         },
         popupTemplate: IMPACT_POPUP,
         symbol: {

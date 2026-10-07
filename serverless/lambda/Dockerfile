@@ -8,12 +8,18 @@
 #   docker buildx build --platform linux/amd64 --provenance=false \
 #     -f serverless/lambda/Dockerfile -t <ecr-url>:<tag> backend
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+# Build stage runs on the BUILD machine's own architecture (e.g. arm64 on Apple Silicon)
+# and cross-compiles for the Lambda's architecture. Running the .NET SDK under amd64
+# emulation is very slow and often hangs in `dotnet restore`; cross-compiling avoids it.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+ARG TARGETARCH
 WORKDIR /src
 COPY backend.csproj .
-RUN dotnet restore
+RUN RID="linux-$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)" && \
+    dotnet restore -r "$RID"
 COPY . .
-RUN dotnet publish -c Release -o /app --no-restore
+RUN RID="linux-$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)" && \
+    dotnet publish -c Release -r "$RID" --self-contained false -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 
