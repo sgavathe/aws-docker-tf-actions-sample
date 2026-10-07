@@ -60,8 +60,8 @@ variable "log_retention_days" {
   default = 7
 }
 
-variable "github_oidc_sub" {
-  description = "OIDC 'sub' pattern allowed to assume the serverless deploy role (same as infra/iam.tf)"
-  type        = string
-  default     = "repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:*"
+variable "github_oidc_subs" {
+  description = "OIDC 'sub' values allowed to assume the serverless deploy role"
+  type        = list(string)
+  default     = ["repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:ref:refs/heads/main"]
 }
