@@ -3,13 +3,13 @@ name: PR Checks
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "infra/**"
-      - "policy/**"
-      - "backend/**"
-      - "frontend/**"
-      - "tests/**"
-      - ".github/workflows/**"
+    # paths:
+    #   - "infra/**"
+    #   - "policy/**"
+    #   - "backend/**"
+    #   - "frontend/**"
+    #   - "tests/**"
+    #   - ".github/workflows/**"
 
 permissions:
   id-token: write
