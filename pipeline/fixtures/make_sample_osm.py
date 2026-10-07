@@ -94,16 +94,20 @@ def main(path):
         "M": (8, 6, "Sample Church Hill Substation", "115000;34500"),
     }
     plants = {
-        "P1": (5, -15, "Sample James Bend Generating Station", "gas"),
-        "P2": (-20, 28, "Sample Hanover Solar Farm", "solar"),
+        "P1": (5, -15, "Sample James Bend Generating Station", "gas", None),
+        "P2": (-20, 28, "Sample Hanover Solar Farm", "solar", "80 MW"),
+        "P3": (-9, 6, "Sample Grocery Rooftop Solar", "solar", "350 kW"),   # too small to be a source
     }
     centre = {}
     for k, (dx, dy, name, volt) in subs.items():
         o.polygon(dx, dy, 0.25, {"power": "substation", "name": name, "voltage": volt,
                                  "substation": "transmission"})
         centre[k] = (dx, dy)
-    for k, (dx, dy, name, src) in plants.items():
-        o.polygon(dx, dy, 0.8, {"power": "plant", "name": name, "plant:source": src})
+    for k, (dx, dy, name, src, output) in plants.items():
+        tags = {"power": "plant", "name": name, "plant:source": src}
+        if output:
+            tags["plant:output:electricity"] = output
+        o.polygon(dx, dy, 0.8 if k != "P3" else 0.1, tags)
         centre[k] = (dx, dy)
 
     def wire(points, volt, name=None):
@@ -126,6 +130,10 @@ def main(path):
     # Ties leaving the 30-mile study area -> treated as outside supply.
     wire(W("N500", (0, 62)), "500000", "Sample Northern 500 kV Tie")
     wire(W("S500", (18, -60)), "500000", "Sample Southern 500 kV Tie")
+    # Feeders that also leave the area but are NOT imports: a 34.5 kV line and an untagged one.
+    wire(W("F", (-62, 5)), "34500", "Sample Western 34.5 kV Feeder")
+    wire(W("I", (62, -2)), "0")
+    o.ways[-1][2].pop("voltage")          # untagged line
     # Generation
     wire(W("P1", "S500"), "500000")
     wire(W("P1", "D"), "230000")

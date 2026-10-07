@@ -60,6 +60,15 @@ def test_sources_are_plants_and_ties_leaving_the_area(graph):
     }
 
 
+def test_small_plants_are_not_sources():
+    assert build_ci_graph.plant_source({"plant:output:electricity": "350 kW", "plant:source": "solar"}, 20) is None
+    assert build_ci_graph.plant_source({"plant:output:electricity": "80 MW"}, 20) == "power plant, 80 MW"
+    assert build_ci_graph.plant_source({"plant:output:electricity": "1.2 GW"}, 20) == "power plant, 1200 MW"
+    assert build_ci_graph.plant_source({"plant:source": "gas;oil"}, 20) == "power plant (gas;oil)"
+    assert build_ci_graph.plant_source({"plant:source": "solar"}, 20) is None
+    assert build_ci_graph.plant_source({}, 20) is None
+
+
 def test_power_flows_from_higher_to_lower_voltage(graph):
     grid = links(graph)
     assert ("Sample North Tie 500 kV Substation", "Sample Westbrook Substation") in grid
@@ -110,3 +119,12 @@ def test_empty_area_fails_loudly(tmp_path):
     rc = build_ci_graph.main([str(osm), "--center", "40.0,-100.0", "--radius-mi", "5",
                               "-o", str(tmp_path / "x.json")])
     assert rc == 1
+
+
+def test_overlapping_extracts_are_not_double_counted(tmp_path):
+    osm = tmp_path / "sample.osm"
+    make_sample_osm.main(str(osm))
+    once = build_ci_graph.build([str(osm)], (37.5407, -77.4360), 30, "t")
+    twice = build_ci_graph.build([str(osm), str(osm)], (37.5407, -77.4360), 30, "t")
+    assert len(twice["nodes"]) == len(once["nodes"])
+    assert len(twice["edges"]) == len(once["edges"])

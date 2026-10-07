@@ -27,13 +27,14 @@ const DRAW_SYMBOL = {
  * Parent drives drawing through the ref: draw("polygon" | "rectangle" | "freehandPolygon"), cancel().
  */
 const CascadeMap = forwardRef(function CascadeMap(
-  { graph, area, impact, selected, focus, onArea, onDrawingChange },
+  { graph, area, impact, selected, focus, cluster = true, onArea, onDrawingChange },
   ref
 ) {
   const containerRef = useRef(null);
   const esri = useRef(null);
   const onAreaRef = useRef(onArea);
   const onDrawingRef = useRef(onDrawingChange);
+  const clusterRef = useRef(cluster);
   const [ready, setReady] = useState(false);
 
   onAreaRef.current = onArea;
@@ -129,20 +130,24 @@ const CascadeMap = forwardRef(function CascadeMap(
         .filter((e) => e.coords?.length > 1)
         .map((e, i) => new Graphic({
           geometry: { type: "polyline", paths: [e.coords], spatialReference: { wkid: 4326 } },
-          attributes: { oid: i + 1, kv: e.voltageKv ?? 0 },
+          // coords run supplier -> dependent, so arrows drawn along the line show power flow
+          attributes: { oid: i + 1, kv: e.voltageKv ?? 0, style: wireStyle(e) },
         })),
       objectIdField: "oid",
-      fields: [{ name: "oid", type: "oid" }, { name: "kv", type: "double" }],
+      fields: [{ name: "oid", type: "oid" }, { name: "kv", type: "double" }, { name: "style", type: "string" }],
       geometryType: "polyline",
       spatialReference: { wkid: 4326 },
       popupEnabled: false,
       renderer: {
-        type: "simple",
-        symbol: { type: "simple-line", color: [70, 82, 96, 0.55], width: 1 },
-        visualVariables: [{
-          type: "size", field: "kv",
-          stops: [{ value: 0, size: 0.75 }, { value: 115, size: 1 }, { value: 230, size: 1.75 }, { value: 500, size: 3 }],
-        }],
+        type: "unique-value",
+        field: "style",
+        defaultSymbol: { type: "simple-line", color: WIRE_COLOR, width: 1, style: "dash" },
+        // Width by voltage band; arrows show the inferred flow direction (higher voltage -> lower,
+        // or away from a source). Links whose direction can't be inferred are dashed.
+        uniqueValueInfos: Object.entries(WIRE_WIDTHS).flatMap(([band, width]) => [
+          { value: `flow:${band}`, symbol: arrowLine({ color: WIRE_COLOR, width, every: 60, arrowSize: 6 + width * 2 }) },
+          { value: `unknown:${band}`, symbol: { type: "simple-line", color: WIRE_COLOR, width, style: "dash" } },
+        ]),
       },
     });
 
@@ -159,6 +164,7 @@ const CascadeMap = forwardRef(function CascadeMap(
           kindLabel: kindLabel(n.kind),
           detail: [
             n.voltageKv ? `<br/>${n.voltageKv} kV` : "",
+            n.outputMw ? `<br/>${n.outputMw} MW` : "",
             n.source ? `<br/>Power source: ${n.source}` : "",
             n.backup?.length ? `<br/>Backup for: ${n.backup.join(", ")}` : "",
           ].join(""),
@@ -173,6 +179,7 @@ const CascadeMap = forwardRef(function CascadeMap(
       spatialReference: { wkid: 4326 },
       outFields: ["*"],
       popupTemplate: ASSET_POPUP,
+      featureReduction: clusterRef.current ? CLUSTER : null,
       renderer: {
         type: "unique-value",
         field: "sector",
@@ -187,14 +194,26 @@ const CascadeMap = forwardRef(function CascadeMap(
     esri.current.base = { wires, assets };
 
     const c = graph.meta?.center;
-    if (c) view.goTo({ center: [c.lon, c.lat], zoom: 10 }, { animate: false }).catch(() => {});
+    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100+.
+    const radius = graph.meta?.radiusMi ?? 30;
+    const zoom = radius > 80 ? 8 : radius > 45 ? 9 : 10;
+    if (c) view.goTo({ center: [c.lon, c.lat], zoom }, { animate: false }).catch(() => {});
 
     return () => {
-      view.map.removeMany([wires, assets]);
+      // On unmount the view (and its map) may already be destroyed by effect 1's cleanup.
+      if (!view.destroyed && view.map) view.map.removeMany([wires, assets]);
+      if (esri.current?.base?.assets === assets) esri.current.base = null;
       wires.destroy();
       assets.destroy();
     };
   }, [ready, graph]);
+
+  // 2b) Turn point clustering on or off without rebuilding the layer.
+  useEffect(() => {
+    clusterRef.current = cluster;
+    const assets = esri.current?.base?.assets;
+    if (assets) assets.featureReduction = cluster ? CLUSTER : null;
+  }, [ready, graph, cluster]);
 
   // 3) The drawn area.
   useEffect(() => {
@@ -246,8 +265,7 @@ const CascadeMap = forwardRef(function CascadeMap(
       const color = LINK_TYPES[i.viaType]?.color ?? "#8a97a3";
       graphics.push(new Graphic({
         geometry: { type: "polyline", paths: [path], spatialReference: { wkid: 4326 } },
-        symbol: { type: "simple-line", color: rgba(color, 0.85), width: 1.75,
-                  style: i.status === "Failed" ? "solid" : "short-dash" },
+        symbol: arrowLine({ color: rgba(color, 0.9), width: 2, dashed: i.status !== "Failed", arrowSize: 11 }),
       }));
     }
 
@@ -293,6 +311,80 @@ const CascadeMap = forwardRef(function CascadeMap(
 
   return <div ref={containerRef} className="map" aria-label="Map of infrastructure and the drawn area" />;
 });
+
+/**
+ * CIM line with arrowheads that follow the line's digitized direction.
+ *   every: repeat an arrow every N points along the line; otherwise one arrow at mid-line.
+ */
+function arrowLine({ color, width, dashed = false, every = 0, arrowSize = 9 }) {
+  const c = color.length === 4 ? [color[0], color[1], color[2], Math.round(color[3] * 255)] : [...color, 255];
+  const stroke = { type: "CIMSolidStroke", enable: true, width, color: c, capStyle: "Round", joinStyle: "Round" };
+  if (dashed) stroke.effects = [{ type: "CIMGeometricEffectDashes", dashTemplate: [5, 4], lineDashEnding: "NoConstraint" }];
+  return {
+    type: "cim",
+    data: {
+      type: "CIMSymbolReference",
+      symbol: {
+        type: "CIMLineSymbol",
+        symbolLayers: [
+          {
+            type: "CIMVectorMarker",
+            enable: true,
+            size: arrowSize,
+            anchorPointUnits: "Relative",
+            frame: { xmin: -5, ymin: -5, xmax: 5, ymax: 5 },
+            markerPlacement: every
+              ? { type: "CIMMarkerPlacementAlongLineSameSize", angleToLine: true, placementTemplate: [every] }
+              : { type: "CIMMarkerPlacementOnLine", angleToLine: true, relativeTo: "LineMiddle" },
+            markerGraphics: [{
+              type: "CIMMarkerGraphic",
+              geometry: { rings: [[[-5, -4.5], [5, 0], [-5, 4.5], [-2.5, 0], [-5, -4.5]]] },
+              symbol: { type: "CIMPolygonSymbol", symbolLayers: [{ type: "CIMSolidFill", enable: true, color: c }] },
+            }],
+            scaleSymbolsProportionally: true,
+            respectFrame: true,
+          },
+          stroke,
+        ],
+      },
+    },
+  };
+}
+
+// Cluster when zoomed out (a 100-mile area is thousands of points). Each cluster takes
+// the color of its most common sector; clustering turns off at neighborhood scale.
+const CLUSTER = {
+  type: "cluster",
+  clusterRadius: "56px",
+  clusterMinSize: "16px",
+  clusterMaxSize: "40px",
+  maxScale: 60000,
+  popupTemplate: {
+    title: "{cluster_count} assets",
+    content: "Mostly {cluster_type_sector}. Zoom in to see each one.",
+  },
+  labelingInfo: [{
+    deconflictionStrategy: "none",
+    labelExpressionInfo: { expression: "Text($feature.cluster_count, '#,###')" },
+    symbol: {
+      type: "text",
+      color: [255, 255, 255, 1],
+      haloColor: [20, 32, 44, 0.85],
+      haloSize: 1,
+      font: { weight: "bold", family: "Arial Unicode MS", size: "11px" },
+    },
+    labelPlacement: "center-center",
+  }],
+};
+
+const WIRE_COLOR = [70, 82, 96, 0.65];
+const WIRE_WIDTHS = { low: 1, mid: 1.75, high: 2.75 };   // <200 kV, 200-344 kV, 345 kV+
+
+function wireStyle(edge) {
+  const kv = edge.voltageKv ?? 0;
+  const band = kv >= 345 ? "high" : kv >= 200 ? "mid" : "low";
+  return `${edge.directed === false ? "unknown" : "flow"}:${band}`;
+}
 
 function dot(color, size) {
   return { type: "simple-marker", size, color: rgba(color), outline: { color: [255, 255, 255, 0.9], width: 0.75 } };

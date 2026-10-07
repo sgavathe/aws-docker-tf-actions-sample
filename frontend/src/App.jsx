@@ -26,6 +26,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const abortRef = useRef(null);
 
+  useEffect(() => { document.title = "Harbor Watch"; }, []);
+
   const track = (res) => {
     if (res?.requestId) setRequestId(res.requestId);
     return res?.data;

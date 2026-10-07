@@ -145,6 +145,12 @@ SNAP_PASS_M = 10      # a wire passing this close (inside the fence) also connec
 DIST_LINK_KM = 15     # substation with no mapped wires -> nearest wired substation
 DEDUPE_M = 150        # same-kind point + polygon closer than this are one asset
 SIMPLIFY_M = 20       # wire geometry simplification for the output
+MIN_SOURCE_MW = 20    # plants at least this big count as power sources (rooftop solar doesn't)
+MIN_TIE_KV = 115      # a wire leaving the study area counts as an import only at this voltage or above;
+                      # distribution feeders and untagged lines crossing the edge don't
+
+# Plants with no output tag still count as sources if they burn or spin something.
+DISPATCHABLE = {"gas", "coal", "nuclear", "oil", "diesel", "hydro", "biomass", "biogas", "waste"}
 
 
 # --------------------------------------------------------------------------------------
@@ -186,6 +192,25 @@ def max_voltage_kv(tags: dict) -> float:
     return v / 1000 if v >= 1000 else v   # OSM uses volts; tolerate kV values
 
 
+def plant_mw(tags: dict) -> float | None:
+    """'20 MW' -> 20, '500 kW' -> 0.5, '1.2 GW' -> 1200; None when untagged or unparseable."""
+    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*([kMG]?W)p?\b", tags.get("plant:output:electricity", "") or "")
+    if not m:
+        return None
+    return float(m.group(1)) * {"kW": 0.001, "MW": 1.0, "GW": 1000.0, "W": 1e-6}[m.group(2)]
+
+
+def plant_source(tags: dict, min_mw: float) -> str | None:
+    """Why this plant counts as a power source, or None if it's too small / unknown solar."""
+    mw = plant_mw(tags)
+    fuel = (tags.get("plant:source") or "").lower()
+    if mw is not None:
+        return f"power plant, {mw:g} MW" if mw >= min_mw else None
+    if any(f in DISPATCHABLE for f in re.split(r"[;,]\s*", fuel)):
+        return f"power plant ({fuel})"
+    return None
+
+
 def label(a: Asset) -> str:
     if a.name:
         return a.name
@@ -213,6 +238,7 @@ def read_osm(paths: list[str], fwd: Transformer, core_m: Point, core_radius_m: f
     assets: list[Asset] = []
     lines: list[tuple[str, float, LineString]] = []
     seen_lines: set[str] = set()
+    seen_assets: set[str] = set()     # neighbouring extracts overlap at state borders
 
     def in_bbox(lon, lat):
         return w <= lon <= e and s <= lat <= n
@@ -267,6 +293,9 @@ def read_osm(paths: list[str], fwd: Transformer, core_m: Point, core_radius_m: f
             pt = gm.representative_point() if is_area else gm
             if not core.contains(pt):
                 continue
+            if osm_id in seen_assets:
+                continue
+            seen_assets.add(osm_id)
             a = Asset(osm=osm_id, sector=cls[0], kind=cls[1], name=tags.get("name"),
                       geom=gm, tags=tags, is_area=is_area, pt=pt)
             if a.kind == "substation":
@@ -303,7 +332,8 @@ def dedupe(assets: list[Asset]) -> list[Asset]:
 # 2. Power grid topology
 # --------------------------------------------------------------------------------------
 
-def build_grid(assets: list[Asset], lines, core: object, to_ll) -> list[dict]:
+def build_grid(assets: list[Asset], lines, core: object, to_ll, min_source_mw: float = MIN_SOURCE_MW,
+               min_tie_kv: float = MIN_TIE_KV) -> list[dict]:
     terminals = [a for a in assets if a.kind in ("plant", "substation")]
     if not terminals or not lines:
         return []
@@ -376,15 +406,14 @@ def build_grid(assets: list[Asset], lines, core: object, to_ll) -> list[dict]:
                         pairs[pk]["kv"] = max(pairs[pk]["kv"], v)
                     continue                    # don't walk through another substation
                 if nb in outside:
-                    if not t.source:
-                        t.source = f"wired to the grid outside the study area ({v:g} kV)" if v else \
-                                   "wired to the grid outside the study area"
+                    if not t.source and v >= min_tie_kv:
+                        t.source = f"{v:g} kV tie to the grid outside the study area"
                     continue
                 q.append((nb, v))
 
     for t in terminals:
         if t.kind == "plant":
-            t.source = "power plant"
+            t.source = plant_source(t.tags, min_source_mw)
 
     # Direction: voltage step-down first, then distance from a source.
     tadj = defaultdict(set)
@@ -479,7 +508,8 @@ def utm_for(lat: float, lon: float) -> CRS:
     return CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
 
 
-def build(paths: list[str], center: tuple[float, float], radius_mi: float, region: str) -> dict:
+def build(paths: list[str], center: tuple[float, float], radius_mi: float, region: str,
+          min_source_mw: float = MIN_SOURCE_MW, min_tie_kv: float = MIN_TIE_KV) -> dict:
     lat0, lon0 = center
     utm = utm_for(lat0, lon0)
     fwd = Transformer.from_crs("EPSG:4326", utm, always_xy=True)
@@ -497,7 +527,7 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
     bbox = (min(lons), min(lats), max(lons), max(lats))
 
     assets, lines = read_osm(paths, fwd, core_center, radius_m, bbox)
-    grid_edges = build_grid(assets, lines, core, to_ll)
+    grid_edges = build_grid(assets, lines, core, to_ll, min_source_mw, min_tie_kv)
     dep_edges = build_dependencies(assets)
 
     # Only keep assets that take part in at least one dependency, plus all energy assets.
@@ -514,6 +544,8 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
                 "lon": round(lon, 5), "lat": round(lat, 5)}
         if a.voltage_kv:
             node["voltageKv"] = a.voltage_kv
+        if a.kind == "plant" and plant_mw(a.tags) is not None:
+            node["outputMw"] = plant_mw(a.tags)
         if a.source:
             node["source"] = a.source
         if a.kind in BACKUP:
@@ -553,6 +585,7 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
                      "not taken from utility records.",
             "nodeCounts": dict(sorted(counts.items())),
             "edgeCount": len(edges),
+            "powerSources": sum(1 for n in nodes if n.get("source")),
             "wireSegments": len(lines),
         },
         "nodes": nodes,
@@ -566,12 +599,16 @@ def main(argv=None) -> int:
     ap.add_argument("--center", default="37.5407,-77.4360", help="lat,lon (default: Richmond, VA)")
     ap.add_argument("--radius-mi", type=float, default=70)
     ap.add_argument("--region", default="Richmond, VA")
+    ap.add_argument("--min-source-mw", type=float, default=MIN_SOURCE_MW,
+                    help="smallest plant that counts as a power source (default %(default)s MW)")
+    ap.add_argument("--min-tie-kv", type=float, default=MIN_TIE_KV,
+                    help="lowest line voltage that counts as an import across the area edge (default %(default)s kV)")
     ap.add_argument("--sample", action="store_true", help="mark output as synthetic sample data")
     ap.add_argument("-o", "--output", default="build/ci-graph.json")
     args = ap.parse_args(argv)
 
     lat, lon = (float(v) for v in args.center.split(","))
-    graph = build(args.inputs, (lat, lon), args.radius_mi, args.region)
+    graph = build(args.inputs, (lat, lon), args.radius_mi, args.region, args.min_source_mw, args.min_tie_kv)
     if args.sample:
         graph["meta"].update(sample=True, source="Synthetic sample (not real infrastructure)",
                              attribution="Synthetic demo data", license="CC0")

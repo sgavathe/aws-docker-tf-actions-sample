@@ -15,8 +15,8 @@ on:
     - cron: "17 7 * * 1"   # Mondays 07:17 UTC (Geofabrik refreshes extracts daily)
   workflow_dispatch:
     inputs:
-      extract:
-        description: "Geofabrik extract path (download.geofabrik.de/<path>-latest.osm.pbf)"
+      extracts:
+        description: "Geofabrik extract paths, space-separated (download.geofabrik.de/<path>-latest.osm.pbf)"
         default: "north-america/us/virginia"
       center:
         description: "Study area center, lat,lon"
@@ -41,7 +41,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  EXTRACT: ${{ inputs.extract || 'north-america/us/virginia' }}
+  # 100 miles around Richmond needs: north-america/us/virginia north-america/us/north-carolina
+  #                                  north-america/us/maryland north-america/us/district-of-columbia
+  EXTRACTS: ${{ inputs.extracts || 'north-america/us/virginia' }}
   CENTER: ${{ inputs.center || '37.5407,-77.4360' }}
   RADIUS_MI: ${{ inputs.radius_mi || '70' }}
   REGION: ${{ inputs.region || 'Richmond, VA' }}
@@ -70,29 +72,36 @@ jobs:
       - name: Weekly cache key
         if: github.event_name != 'pull_request'
         id: week
-        run: echo "key=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          echo "extracts=$(echo "$EXTRACTS" | tr ' /' '+-')" >> "$GITHUB_OUTPUT"
 
       - name: Cache OSM extract
         if: github.event_name != 'pull_request'
         uses: actions/cache@v4
         with:
           path: osm
-          key: osm-${{ env.EXTRACT }}-${{ steps.week.outputs.key }}
+          key: osm-${{ steps.week.outputs.extracts }}-${{ steps.week.outputs.week }}
 
-      - name: Download OSM extract
+      - name: Download OSM extracts
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p osm
-          file="osm/$(basename "$EXTRACT")-latest.osm.pbf"
-          if [ ! -s "$file" ]; then
-            curl -fL --retry 3 --retry-delay 10 -o "$file" "https://download.geofabrik.de/${EXTRACT}-latest.osm.pbf"
-          fi
+          for extract in $EXTRACTS; do
+            file="osm/$(basename "$extract")-latest.osm.pbf"
+            if [ ! -s "$file" ]; then
+              curl -fL --retry 3 --retry-delay 10 -o "$file" "https://download.geofabrik.de/${extract}-latest.osm.pbf"
+            fi
+          done
           ls -lh osm
 
       - name: Build dependency graph
         if: github.event_name != 'pull_request'
         run: |
-          python pipeline/build_ci_graph.py osm/*.osm.pbf \
+          inputs=""
+          for extract in $EXTRACTS; do inputs="$inputs osm/$(basename "$extract")-latest.osm.pbf"; done
+          # shellcheck disable=SC2086
+          python pipeline/build_ci_graph.py $inputs \
             --center "$CENTER" --radius-mi "$RADIUS_MI" --region "$REGION" \
             -o build/ci-graph.json
 

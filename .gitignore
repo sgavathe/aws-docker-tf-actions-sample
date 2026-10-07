@@ -34,3 +34,4 @@ osm/
 *.osm.pbf
 __pycache__/
 .pytest_cache/
+.venv/

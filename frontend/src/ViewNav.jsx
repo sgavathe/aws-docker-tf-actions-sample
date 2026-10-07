@@ -1,6 +1,6 @@
 const VIEWS = [
-  { id: "harbor", label: "Harbor Watch" },
   { id: "cascade", label: "Grid Cascade" },
+  { id: "harbor", label: "Harbor Watch" },
 ];
 
 /** Switch between the two demo views (hash routes, so both work from S3/nginx with no server routing). */
@@ -17,5 +17,5 @@ export default function ViewNav({ current }) {
 }
 
 export function viewFromHash() {
-  return window.location.hash === "#cascade" ? "cascade" : "harbor";
+  return window.location.hash === "#harbor" ? "harbor" : "cascade";
 }

@@ -30,6 +30,17 @@ function squareAround(lat, lon, km) {
 
 const fmt = new Intl.NumberFormat("en-US");
 
+// The API works in kilometres; the page shows US units.
+const KM_PER_MI = 1.609344;
+const miles = (km) => {
+  const mi = km / KM_PER_MI;
+  return mi >= 10 ? Math.round(mi) : Math.round(mi * 10) / 10;
+};
+const squareMiles = (km2) => {
+  const mi2 = km2 / (KM_PER_MI * KM_PER_MI);
+  return mi2 >= 10 ? fmt.format(Math.round(mi2)) : Math.round(mi2 * 10) / 10;
+};
+
 export default function CascadeApp() {
   const [graph, setGraph] = useState(null);
   const [area, setArea] = useState(null);
@@ -42,13 +53,17 @@ export default function CascadeApp() {
   const [focus, setFocus] = useState(null);         // ids the map should fly to
   const [showAll, setShowAll] = useState(false);
   const [graphOpen, setGraphOpen] = useState(true);
+  const [cluster, setCluster] = useState(() => {
+    try { return localStorage.getItem("cascade.cluster") !== "off"; } catch { return true; }
+  });
+  const toggleCluster = (on) => {
+    setCluster(on);
+    try { localStorage.setItem("cascade.cluster", on ? "on" : "off"); } catch { /* private mode */ }
+  };
   const mapRef = useRef(null);
   const abortRef = useRef(null);
 
-  useEffect(() => {
-    document.title = "Grid Cascade";
-    return () => { document.title = "Harbor Watch"; };
-  }, []);
+  useEffect(() => { document.title = "Grid Cascade"; }, []);
 
   const runImpact = useCallback(async (geojson) => {
     abortRef.current?.abort();
@@ -75,7 +90,7 @@ export default function CascadeApp() {
 
   const example = useCallback(() => {
     const c = graph?.meta?.center;
-    if (c) runImpact(squareAround(c.lat, c.lon, 2));
+    if (c) runImpact(squareAround(c.lat, c.lon, 1.25 * KM_PER_MI));   // 1.25-mile square
   }, [graph, runImpact]);
 
   // Load the graph once, then open on a worked example so the page never starts empty.
@@ -153,6 +168,10 @@ export default function CascadeApp() {
           <p className="hint">
             {activeHint ?? "Everything inside the area is treated as down, and power lines crossing it as cut."}
           </p>
+          <label className="check">
+            <input id="cluster-toggle" type="checkbox" checked={cluster} onChange={(e) => toggleCluster(e.target.checked)} />
+            <span>Group nearby assets when zoomed out</span>
+          </label>
           <div className="tool-row">
             <button type="button" className="link-btn" onClick={example} disabled={!graph}>Run the example</button>
             <button type="button" className="link-btn" onClick={clear} disabled={!area && !drawingTool}>Clear</button>
@@ -183,10 +202,10 @@ export default function CascadeApp() {
                 <div><dt>Failed</dt><dd className="k-failed">{fmt.format(s.failed)}</dd></div>
                 <div><dt>On backup</dt><dd className="k-degraded">{fmt.format(s.degraded)}</dd></div>
                 <div><dt>Hops</dt><dd>{s.maxHops}</dd></div>
-                <div><dt>Reach</dt><dd>{s.reachKm >= 10 ? Math.round(s.reachKm) : s.reachKm}<small> km</small></dd></div>
+                <div><dt>Reach</dt><dd>{miles(s.reachKm)}<small> mi</small></dd></div>
               </dl>
               <p className="where">
-                {s.areaKm2} km² drawn · {s.directlyHit} inside · {s.severedLines} power line{s.severedLines === 1 ? "" : "s"} cut
+                {squareMiles(s.areaKm2)} sq mi drawn · {s.directlyHit} inside · {s.severedLines} power line{s.severedLines === 1 ? "" : "s"} cut
               </p>
               {sectorsHit.length === 0 ? (
                 <p className="muted">Nothing fails. The area misses every asset and power line, or the grid routes around it.</p>
@@ -275,6 +294,7 @@ export default function CascadeApp() {
             impact={impact}
             selected={selected}
             focus={focus}
+            cluster={cluster}
             onArea={(geo) => { setDrawingTool(null); runImpact(geo); }}
             onDrawingChange={(on) => { if (!on) setDrawingTool(null); }}
           />
