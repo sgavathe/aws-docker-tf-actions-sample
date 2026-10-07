@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MapPanel from "./components/MapPanel.jsx";
+import ViewNav from "./ViewNav.jsx";
 import { api, TYPE_COLORS } from "./api.js";
 
 const TYPES = Object.keys(TYPE_COLORS);
@@ -111,6 +112,7 @@ export default function App() {
   return (
     <div className="app">
       <aside className="panel">
+        <ViewNav current="harbor" />
         <header className="brand">
           <div className="stripe" aria-hidden="true" />
           <h1>Harbor Watch</h1>

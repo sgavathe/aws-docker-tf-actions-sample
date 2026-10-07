@@ -1,0 +1,61 @@
+name: Deploy (serverless, low-cost)
+
+# Runs on push to main only when the repo variable DEPLOY_TARGET = "serverless"
+# (Settings -> Secrets and variables -> Actions -> Variables). Can always be run manually.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      attach_domain:
+        description: "Serve on map.spatialenable.com (false = cloudfront.net URL only)"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write   # OIDC -> AWS role assumption
+  contents: read
+
+concurrency:
+  group: deploy-serverless
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_TARGET == 'serverless'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Backend unit tests
+        run: dotnet test tests/Backend.Tests
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false   # so `terraform output -raw` returns clean values
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SERVERLESS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and deploy
+        env:
+          AUTO_APPROVE: "true"
+          ATTACH_DOMAIN: ${{ github.event_name == 'workflow_dispatch' && inputs.attach_domain == false && 'false' || 'true' }}
+        run: bash ./serverless/scripts/deploy.sh

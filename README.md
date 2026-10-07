@@ -15,13 +15,50 @@ Images live in two ECR repos, built and pushed by GitHub Actions on push to main
 GitHub Actions assumes an IAM role via OIDC federation - no static AWS access keys.
 ```
 
+### Two deployment modes
+
+| Mode | Code | Cost | Use |
+|---|---|---|---|
+| **ECS Fargate + ALB** | `infra/`, `.github/workflows/deploy.yml` | ~$50/month | Production-style reference architecture |
+| **Serverless** | `serverless/`, `.github/workflows/deploy-serverless.yml` | under $1/month | Day-to-day hosting of the same app, scale to zero |
+
+Same `backend/` and `frontend/` code in both. The repo variable `DEPLOY_TARGET` picks which one deploys on push.
+See [serverless/README.md](serverless/README.md) for switching between them.
+
+## Grid Cascade: critical-infrastructure dependencies
+
+The second view (`/#cascade`) answers "what breaks if everything in this area goes down?"
+Draw a polygon on the map; the API marks everything inside as down and cuts the power lines
+crossing it, then traces the cascade:
+
+- **Power grid:** energy assets that lose every path to a power source go dark. Redundant routes keep the rest live.
+- **Services:** facilities lose power, water or comms when all their suppliers are down. Hospitals,
+  exchanges and emergency services with backup show as *on backup* instead of failed.
+- **How far:** every affected asset gets a hop count and a distance from the drawn area. The cascade
+  graph shows sector × hop, with links colored by what they carry.
+
+```
+pipeline/build_ci_graph.py   OpenStreetMap extract -> inferred dependency graph (JSON)
+.github/workflows/ci-graph.yml   weekly: Geofabrik Virginia -> graph -> S3 (serverless) 
+backend/  GET  /api/infrastructure          what data is loaded
+          GET  /api/infrastructure/graph    the whole graph (ETag, gzip)
+          POST /api/infrastructure/impact   { "area": GeoJSON Polygon } -> failed / on backup / hops / reach
+frontend/src/cascade/   ArcGIS SketchViewModel drawing, map layers, SVG cascade graph
+```
+
+Out of the box the API serves a **synthetic** Richmond-shaped sample (`backend/Data/ci-graph.sample.json`),
+so nothing real is needed to run it. Real data comes from OpenStreetMap; all dependency links are inferred
+from location and tags, not utility records. See [pipeline/README.md](pipeline/README.md).
+
 ## Repo layout
 
 ```
-backend/    .NET 8 minimal API - /health and /api/locations endpoints
-frontend/   Angular 17 app - fetches from the backend, runtime-configurable API URL
+backend/    .NET 8 minimal API - incidents, hotspots (ML.NET), weather, infrastructure impact
+frontend/   React + Vite + ArcGIS Maps SDK - Harbor Watch and Grid Cascade views
+pipeline/   Python - OpenStreetMap extract -> infrastructure dependency graph
 infra/      Terraform - ECR, ECS cluster/services/tasks, ALB, IAM (incl. GitHub OIDC role)
-.github/workflows/deploy.yml   CI/CD pipeline
+serverless/ Terraform + scripts - S3 + CloudFront + Lambda version of the same app
+.github/workflows/   deploy.yml (ECS), deploy-serverless.yml, ci-graph.yml
 ```
 
 ## Running locally (no AWS needed)

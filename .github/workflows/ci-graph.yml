@@ -1,0 +1,138 @@
+name: Infrastructure graph (OpenStreetMap)
+
+# Builds the critical-infrastructure dependency graph from a Geofabrik OpenStreetMap
+# extract and publishes it for the API (serverless stack: s3://<site bucket>/data/ci-graph.json).
+# The Lambda picks up the new file within CiGraph__RefreshMinutes (15) - no redeploy needed.
+#
+#   - Pull requests touching pipeline/: run the pipeline tests only.
+#   - Weekly schedule: rebuild with the defaults, publish when DEPLOY_TARGET = serverless.
+#   - Manual run: choose the extract, area and whether to publish.
+
+on:
+  pull_request:
+    paths: ["pipeline/**", ".github/workflows/ci-graph.yml"]
+  schedule:
+    - cron: "17 7 * * 1"   # Mondays 07:17 UTC (Geofabrik refreshes extracts daily)
+  workflow_dispatch:
+    inputs:
+      extract:
+        description: "Geofabrik extract path (download.geofabrik.de/<path>-latest.osm.pbf)"
+        default: "north-america/us/virginia"
+      center:
+        description: "Study area center, lat,lon"
+        default: "37.5407,-77.4360"
+      radius_mi:
+        description: "Study area radius in miles"
+        default: "70"
+      region:
+        description: "Name shown in the app"
+        default: "Richmond, VA"
+      publish:
+        description: "Publish to the serverless site bucket"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write   # OIDC -> AWS role assumption (publish step only)
+  contents: read
+
+concurrency:
+  group: ci-graph
+  cancel-in-progress: false
+
+env:
+  EXTRACT: ${{ inputs.extract || 'north-america/us/virginia' }}
+  CENTER: ${{ inputs.center || '37.5407,-77.4360' }}
+  RADIUS_MI: ${{ inputs.radius_mi || '70' }}
+  REGION: ${{ inputs.region || 'Richmond, VA' }}
+  PROJECT_NAME: geo-devops-demo
+  AWS_REGION: us-east-1
+
+jobs:
+  graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r pipeline/requirements.txt
+
+      - name: Pipeline tests (synthetic fixture)
+        run: python -m pytest -q pipeline/tests
+
+      - name: Weekly cache key
+        if: github.event_name != 'pull_request'
+        id: week
+        run: echo "key=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OSM extract
+        if: github.event_name != 'pull_request'
+        uses: actions/cache@v4
+        with:
+          path: osm
+          key: osm-${{ env.EXTRACT }}-${{ steps.week.outputs.key }}
+
+      - name: Download OSM extract
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p osm
+          file="osm/$(basename "$EXTRACT")-latest.osm.pbf"
+          if [ ! -s "$file" ]; then
+            curl -fL --retry 3 --retry-delay 10 -o "$file" "https://download.geofabrik.de/${EXTRACT}-latest.osm.pbf"
+          fi
+          ls -lh osm
+
+      - name: Build dependency graph
+        if: github.event_name != 'pull_request'
+        run: |
+          python pipeline/build_ci_graph.py osm/*.osm.pbf \
+            --center "$CENTER" --radius-mi "$RADIUS_MI" --region "$REGION" \
+            -o build/ci-graph.json
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          g = json.load(open("build/ci-graph.json"))
+          m = g["meta"]
+          print(f"### {m['region']} ({m['radiusMi']} mi)\n")
+          print(f"{len(g['nodes'])} assets, {len(g['edges'])} links, {m['wireSegments']} mapped wire segments\n")
+          print("| Sector | Assets |\n|---|---|")
+          for sector, n in m["nodeCounts"].items():
+              print(f"| {sector} | {n} |")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: ci-graph
+          path: build/ci-graph.json
+          retention-days: 30
+
+      - name: Configure AWS credentials via OIDC
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.publish) ||
+          (github.event_name == 'schedule' && vars.DEPLOY_TARGET == 'serverless')
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SERVERLESS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Publish to the site bucket
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.publish) ||
+          (github.event_name == 'schedule' && vars.DEPLOY_TARGET == 'serverless')
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="${PROJECT_NAME}-sls-site-${account}"
+          aws s3 cp build/ci-graph.json "s3://${bucket}/data/ci-graph.json" \
+            --content-type application/json --cache-control "public, max-age=300"
+          echo "Published. The API serves it within 15 minutes (next graph refresh)."
