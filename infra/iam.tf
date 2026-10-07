@@ -65,8 +65,11 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          # Replace with your actual GitHub org/user + repo name
-          "token.actions.githubusercontent.com:sub" = "repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:*"
+          # Pushes to main deploy; pull requests only run terraform plan.
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:ref:refs/heads/main",
+            "repo:sgavathe@6047188/aws-docker-tf-actions-sample@1373663842:pull_request",
+          ]
         }
       }
     }]

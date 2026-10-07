@@ -1,0 +1,45 @@
+# Checkov (static Terraform scan) for infra/ and serverless/terraform/.
+# Every skip below is a deliberate, written-down trade-off for a low-cost public demo.
+# Anything NOT listed fails the "Security / iac" check. Remove a line once it's fixed.
+framework:
+  - terraform
+compact: true
+quiet: true
+skip-check:
+  # --- Cost: customer-managed KMS keys (~$1/key/month). AWS-managed encryption is already on.
+  - CKV_AWS_136   # ECR encrypted with KMS CMK
+  - CKV_AWS_145   # S3 default encryption with KMS CMK (SSE-S3 is on)
+  - CKV_AWS_158   # CloudWatch log group encrypted with KMS CMK
+  - CKV_AWS_173   # Lambda environment variables encrypted with CMK (no secrets in them)
+  # --- Cost: WAF (~$6+/month minimum). Revisit if the site gets real traffic.
+  - CKV_AWS_68    # CloudFront without WAF
+  - CKV2_AWS_47   # CloudFront WAF Log4j rule (needs WAF first)
+  - CKV2_AWS_28   # Public ALB without WAF (ECS stack, parked)
+  # --- Cost: no NAT gateway (~$33/month), so ECS tasks run in public subnets.
+  - CKV_AWS_130   # Subnets assign public IPs
+  - CKV_AWS_333   # ECS services get public IPs (inbound still limited to the ALB by security group)
+  - CKV_AWS_117   # Lambda outside a VPC (nothing private to reach; a VPC would need NAT)
+  # --- Cost / volume: logging and retention beyond what a demo needs
+  - CKV_AWS_338   # Log retention of at least 1 year
+  - CKV2_AWS_11   # VPC flow logs
+  - CKV_AWS_91    # ALB access logs
+  - CKV_AWS_86    # CloudFront access logs
+  - CKV_AWS_18    # S3 server access logs
+  - CKV_AWS_50    # X-Ray tracing on Lambda
+  # --- Not applicable to this design
+  - CKV_AWS_260   # Port 80 open on the ALB: it only redirects to HTTPS
+  - CKV_AWS_378   # ALB to target over HTTP: TLS ends at the ALB, traffic stays in the VPC
+  - CKV_AWS_150   # ALB deletion protection: the stack is parked and destroyed on purpose
+  - CKV_AWS_116   # Lambda dead-letter queue: invoked synchronously over HTTP, nothing to retry
+  - CKV_AWS_115   # Lambda reserved concurrency: new-account quota of 10 rejects reservations
+  - CKV_AWS_272   # Lambda code signing: deploys only from the main-branch OIDC role
+  - CKV_AWS_144   # S3 cross-region replication: site is rebuilt from git
+  - CKV_AWS_310   # CloudFront origin failover: single-region demo
+  - CKV_AWS_374   # CloudFront geo restriction: public site
+  - CKV2_AWS_62   # S3 event notifications: nothing consumes them
+  - CKV_AWS_394   # Pinning AZ IDs: 2 AZs chosen by index is fine for a demo
+  - CKV_AWS_336   # Read-only root filesystem: nginx and .NET need writable temp dirs (TODO: tmpfs mounts)
+  # --- TODO: worth fixing
+  - CKV_AWS_21    # S3 versioning on the site bucket (deploy role needs s3:PutBucketVersioning first)
+  - CKV2_AWS_61   # S3 lifecycle rule (pair with versioning to expire old versions)
+  - CKV_AWS_355   # ECS deploy role: some statements use Resource "*" (scope them to the project's ARNs)

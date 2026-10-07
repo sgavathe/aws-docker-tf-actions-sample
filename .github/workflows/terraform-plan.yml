@@ -1,15 +1,10 @@
 name: PR Checks
 
+# No path filter: build-test and plan are required checks, and a required check that
+# never starts blocks the PR forever.
 on:
   pull_request:
     branches: [main]
-    # paths:
-    #   - "infra/**"
-    #   - "policy/**"
-    #   - "backend/**"
-    #   - "frontend/**"
-    #   - "tests/**"
-    #   - ".github/workflows/**"
 
 permissions:
   id-token: write
