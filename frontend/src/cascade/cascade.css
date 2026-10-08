@@ -121,6 +121,20 @@
 .app.cascade { grid-template-columns: 360px minmax(0, 1fr); }
 .stage-split { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; }
 .map-wrap { position: relative; min-height: 0; min-width: 0; }
+.basemap-switch {
+  position: absolute; top: 12px; right: 12px; z-index: 2;
+  display: flex; padding: 3px; gap: 2px;
+  background: var(--harbor); border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.basemap-switch button {
+  border: 0; border-radius: 4px; padding: 5px 10px; cursor: pointer;
+  background: transparent; color: var(--mist);
+  font: 600 13px/1 var(--font-display); letter-spacing: 0.02em;
+}
+.basemap-switch button:hover { color: var(--signal); }
+.basemap-switch button[aria-pressed="true"] { background: var(--harbor-2); color: var(--signal); }
+.basemap-switch button:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 .map-note {
   position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
   margin: 0; padding: 8px 14px;
