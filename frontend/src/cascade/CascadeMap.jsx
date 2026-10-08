@@ -5,6 +5,9 @@ import { describeAssets, esc } from "./assetDetails.js";
 // Popup bodies are built when a feature is clicked (details.get), not for every asset upfront.
 const assetPopup = (details) => ({
   title: "{name}",
+  // A content function doesn't declare which fields it reads, so ask for all of them;
+  // otherwise the layer only fetches the fields named in the title.
+  outFields: ["*"],
   content: ({ graphic }) => {
     const a = graphic.attributes;
     return `${esc(a.kindLabel)} (${esc(a.sectorLabel)})${details.get(a.id)}`;
@@ -13,6 +16,9 @@ const assetPopup = (details) => ({
 
 const impactPopup = (details) => ({
   title: "{name}",
+  // A content function doesn't declare which fields it reads, so ask for all of them;
+  // otherwise the layer only fetches the fields named in the title.
+  outFields: ["*"],
   content: ({ graphic }) => {
     const a = graphic.attributes;
     return `<b>${esc(a.statusLabel)}</b>, hop ${a.hop}<br/>${esc(a.cause)}<br/>` +
