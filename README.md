@@ -1,112 +1,75 @@
 # Geo DevOps Demo
 
-A minimal end-to-end demo touching the stack from the Senior GIS/AWS Developer/Engineer JD:
-Angular frontend, .NET backend, Docker, Terraform, ECS Fargate, IAM, ALB, and a GitHub
-Actions pipeline deploying via OIDC (no long-lived AWS keys in GitHub secrets).
+A map app with a .NET API, deployed to AWS by Terraform and GitHub Actions. It has two views:
 
-## Architecture
+- **Grid Cascade** (`/#cascade`, the default): draw an area on the map and see which power, water,
+  communications and emergency assets fail next, and how far the failure travels.
+- **Harbor Watch** (`/#harbor`): incidents, ML.NET hotspots and live weather.
 
-```
-User -> ALB -> [ / -> frontend service (Angular, nginx) ]
-             -> [ /api/*, /health -> backend service (.NET minimal API) ]
+Live at **https://map.spatialenable.com** (serverless: CloudFront, S3, Lambda).
 
-Both services run as ECS Fargate tasks in the account's default VPC.
-Images live in two ECR repos, built and pushed by GitHub Actions on push to main.
-GitHub Actions assumes an IAM role via OIDC federation - no static AWS access keys.
-```
-
-### Two deployment modes
-
-| Mode | Code | Cost | Use |
-|---|---|---|---|
-| **ECS Fargate + ALB** | `infra/`, `.github/workflows/deploy.yml` | ~$50/month | Production-style reference architecture |
-| **Serverless** | `serverless/`, `.github/workflows/deploy-serverless.yml` | under $1/month | Day-to-day hosting of the same app, scale to zero |
-
-Same `backend/` and `frontend/` code in both. The repo variable `DEPLOY_TARGET` picks which one deploys on push.
-See [serverless/README.md](serverless/README.md) for switching between them.
-
-## Grid Cascade: critical-infrastructure dependencies
-
-The second view (`/#cascade`) answers "what breaks if everything in this area goes down?"
-Draw a polygon on the map; the API marks everything inside as down and cuts the power lines
-crossing it, then traces the cascade:
-
-- **Power grid:** energy assets that lose every path to a power source go dark. Redundant routes keep the rest live.
-- **Services:** facilities lose power, water or comms when all their suppliers are down. Hospitals,
-  exchanges and emergency services with backup show as *on backup* instead of failed.
-- **How far:** every affected asset gets a hop count and a distance from the drawn area. The cascade
-  graph shows sector × hop, with links colored by what they carry.
-
-```
-pipeline/build_ci_graph.py   OpenStreetMap extract -> inferred dependency graph (JSON)
-.github/workflows/ci-graph.yml   weekly: Geofabrik Virginia -> graph -> S3 (serverless) 
-backend/  GET  /api/infrastructure          what data is loaded
-          GET  /api/infrastructure/graph    the whole graph (ETag, gzip)
-          POST /api/infrastructure/impact   { "area": GeoJSON Polygon } -> failed / on backup / hops / reach
-frontend/src/cascade/   ArcGIS SketchViewModel drawing, map layers, SVG cascade graph
+```mermaid
+flowchart LR
+    V["Visitor"] --> CF["CloudFront"]
+    CF -->|"static files"| S3["S3: React build"]
+    CF -->|"/api/*, signed"| L["Lambda: .NET 8 API"]
+    L -->|"reads every 15 min"| G["S3: ci-graph.json"]
+    P["GitHub Actions: Python pipeline<br/>OpenStreetMap to graph"] -->|"publishes"| G
 ```
 
-Out of the box the API serves a **synthetic** Richmond-shaped sample (`backend/Data/ci-graph.sample.json`),
-so nothing real is needed to run it. Real data comes from OpenStreetMap; all dependency links are inferred
-from location and tags, not utility records. See [pipeline/README.md](pipeline/README.md).
+## Documentation
+
+| Page | Covers |
+| --- | --- |
+| [docs/grid-cascade.md](docs/grid-cascade.md) | Using Grid Cascade, what happens after you draw, the cascade algorithm, the data and its limits, code map |
+| [docs/hosting.md](docs/hosting.md) | ECS vs serverless: both architectures, cost, wiring without a VPC, cold starts |
+| [SECURITY.md](SECURITY.md) | The six required PR checks, sensitive-content rules, OPA policies, accepted risks |
+| [serverless/README.md](serverless/README.md) | Deploying and switching between the two hosting modes |
+| [pipeline/README.md](pipeline/README.md) | Building the infrastructure graph from OpenStreetMap |
 
 ## Repo layout
 
 ```
-backend/    .NET 8 minimal API - incidents, hotspots (ML.NET), weather, infrastructure impact
-frontend/   React + Vite + ArcGIS Maps SDK - Harbor Watch and Grid Cascade views
-pipeline/   Python - OpenStreetMap extract -> infrastructure dependency graph
-infra/      Terraform - ECR, ECS cluster/services/tasks, ALB, IAM (incl. GitHub OIDC role)
-serverless/ Terraform + scripts - S3 + CloudFront + Lambda version of the same app
-.github/workflows/   deploy.yml (ECS), deploy-serverless.yml, ci-graph.yml
+backend/     .NET 8 minimal API: incidents, hotspots (ML.NET), weather, infrastructure impact
+frontend/    React + Vite + ArcGIS Maps SDK: Grid Cascade and Harbor Watch views
+pipeline/    Python: OpenStreetMap extract -> infrastructure dependency graph (JSON)
+serverless/  Terraform + scripts: S3 + CloudFront + Lambda (live)
+infra/       Terraform: ECS Fargate + ALB in a VPC (parked)
+policy/      OPA rules applied to Terraform plans, with unit tests
+scripts/security/    sensitive-content check run on every PR
+.github/workflows/   deploy-serverless.yml, deploy.yml (ECS), terraform-plan.yml, security.yml, ci-graph.yml
 ```
 
-## Running locally (no AWS needed)
+## Run it locally (no AWS needed)
 
 ```bash
-# Backend
-cd backend
-docker build -t geo-backend .
-docker run -p 8080:8080 geo-backend
+# API on :8080 (serves the bundled synthetic sample graph)
+dotnet run --project backend
 
-# Frontend (in another terminal)
-cd frontend
-docker build -t geo-frontend .
-docker run -p 8081:80 -e API_BASE_URL=http://localhost:8080 geo-frontend
+# Frontend on :5173, in another terminal
+cd frontend && npm install && npm run dev
 ```
 
-Then open http://localhost:8081 - it should list three locations fetched from the backend.
+Open http://localhost:5173. To load a real graph you built with the pipeline instead of the sample:
 
-## Deploying to your own AWS account
+```bash
+CiGraph__Path=build/ci-graph.json dotnet run --project backend
+```
 
-1. **Bootstrap the IAM OIDC role manually first, or via Terraform:**
-   - Edit `infra/iam.tf` and replace `YOUR_GITHUB_USERNAME` in the `github_actions` role's
-     trust policy with your actual GitHub username/org.
-   - From `infra/`, run:
-     ```bash
-     terraform init
-     terraform apply
-     ```
-     (First apply will fail to build the ECS services since no image exists yet in ECR -
-     that's expected. It will still create the ECR repos and IAM role.)
+Tests: `dotnet test tests/Backend.Tests` (28) and `python -m pytest pipeline/tests` (13).
 
-2. **Push initial images manually once, to seed ECR:**
-   ```bash
-   aws ecr get-login-password --region us-east-1 | \
-     docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+## Two hosting modes
 
-   docker build -t <ecr-backend-url>:init ./backend
-   docker push <ecr-backend-url>:init
-   docker build -t <ecr-frontend-url>:init ./frontend
-   docker push <ecr-frontend-url>:init
-   ```
+| Mode | Code | Cost | State |
+| --- | --- | --- | --- |
+| **Serverless** | `serverless/`, `deploy-serverless.yml` | ~$2-3/month | Live since Oct 7, 2026 |
+| **ECS Fargate + ALB** | `infra/`, `deploy.yml` | ~$70-75/month | Parked (`serverless/scripts/park-ecs.sh`) |
 
-3. **Re-run terraform apply** with the `-var backend_image=... -var frontend_image=...`
-   flags pointing at those `:init` tags to stand up the ECS services for the first time.
+Same `backend/` and `frontend/` code in both. The repo variable `DEPLOY_TARGET` (`serverless` or `ecs`)
+picks which one deploys on a push to `main`. GitHub Actions reaches AWS through OIDC roles, so no AWS keys
+are stored in GitHub. Details in [docs/hosting.md](docs/hosting.md) and [serverless/README.md](serverless/README.md).
 
-4. **Add repo secrets in GitHub** (Settings -> Secrets and variables -> Actions):
-   - `AWS_GITHUB_ACTIONS_ROLE_ARN` - the `github_actions_role_arn` Terraform output.
+## Contributing
 
-5. From then on, every push to `main` triggers `.github/workflows/deploy.yml`, which
-   builds both images, pushes to ECR, and re-applies Terraform with the new image tags -
-   updating the ECS services automatically.
+Every pull request to `main` must pass six checks: `secrets`, `sensitive`, `iac`, `policy`, `build-test`
+and `plan`. See [SECURITY.md](SECURITY.md) for what each one blocks and how to handle a failure.

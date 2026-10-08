@@ -63,7 +63,7 @@ export default function CascadeApp() {
   const mapRef = useRef(null);
   const abortRef = useRef(null);
 
-  useEffect(() => { document.title = "Grid Cascade"; }, []);
+  useEffect(() => { document.title = "Grid Cascade: see how infrastructure failures cascade | SpatialEnable"; }, []);
 
   const runImpact = useCallback(async (geojson) => {
     abortRef.current?.abort();

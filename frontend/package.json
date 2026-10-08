@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/build-docs.mjs",
     "build": "vite build",
+    "docs": "node scripts/build-docs.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -15,6 +17,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "marked": "^14.1.4",
     "vite": "^5.4.11"
   }
 }
