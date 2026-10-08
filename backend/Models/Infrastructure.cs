@@ -16,6 +16,7 @@ public sealed class InfraMeta
     public string Region { get; init; } = "";
     public InfraCenter? Center { get; init; }
     public double RadiusMi { get; init; }
+    public InfraArea? Area { get; init; }
     public string GeneratedUtc { get; init; } = "";
     public string Source { get; init; } = "";
     public string Attribution { get; init; } = "";
@@ -25,6 +26,13 @@ public sealed class InfraMeta
     public string Notes { get; init; } = "";
     public Dictionary<string, int> NodeCounts { get; init; } = new();
     public int EdgeCount { get; init; }
+}
+
+/// <summary>Study area the graph was built for: whole states (names) or a circle.</summary>
+public sealed class InfraArea
+{
+    public string Type { get; init; } = "";
+    public List<string> Names { get; init; } = [];
 }
 
 public sealed class InfraCenter

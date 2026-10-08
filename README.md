@@ -13,7 +13,7 @@ flowchart LR
     V["Visitor"] --> CF["CloudFront"]
     CF -->|"static files"| S3["S3: React build"]
     CF -->|"/api/*, signed"| L["Lambda: .NET 8 API"]
-    L -->|"reads every 15 min"| G["S3: ci-graph.json"]
+    L -->|"reads every 15 min"| G["S3: one graph per region<br/>ci-graph.json, florida.json, texas.json"]
     P["GitHub Actions: Python pipeline<br/>OpenStreetMap to graph"] -->|"publishes"| G
 ```
 

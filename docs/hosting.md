@@ -35,7 +35,7 @@ flowchart LR
     CF -->|"static files, OAC"| S3["S3 site bucket (private)<br/>React build"]
     CF -->|"/api/*, signed"| URL["Lambda Function URL<br/>auth AWS_IAM"]
     URL --> L["Lambda: .NET 8 API<br/>1024 MB, scales to zero"]
-    L -->|"reads every 15 min"| G["S3 data/ci-graph.json"]
+    L -->|"reads every 15 min"| G["S3 data/: one graph per region<br/>ci-graph.json, florida.json, texas.json"]
     GH["GitHub Actions<br/>OIDC, main only"] -->|"syncs React"| S3
     GH -->|"pushes image"| ECR["ECR"] --> L
     classDef perreq fill:#e3f4e3,stroke:#2e9b2e,color:#1a1a1a
@@ -69,7 +69,7 @@ caller it should.
 | Visitor -> map.spatialenable.com | Route 53 A/AAAA alias to CloudFront; ACM certificate | (public site) |
 | CloudFront -> S3 site bucket | Origin access control signs each request; bucket policy names this distribution | Bucket private, public access blocked |
 | CloudFront -> Lambda Function URL | OAC signs with SigV4; Lambda permissions name this distribution | Auth type AWS_IAM: unsigned calls get 403 |
-| Lambda -> S3 `data/ci-graph.json` | Lambda role: GetObject on `data/*` only | No other bucket or prefix |
+| Lambda -> S3 `data/*.json` (one per region) | Lambda role: GetObject on `data/*` only | No other bucket or prefix |
 | Lambda -> internet (weather.gov) | Lambda's AWS-managed network has outbound internet | Nothing can connect in except through the URL |
 | GitHub Actions -> AWS | OIDC token exchanged for the deploy role; no stored keys | Role trusts only `main` of this repo |
 
@@ -110,7 +110,7 @@ Lambda SnapStart works only with zip-packaged functions, not container images li
 | --- | --- | --- |
 | Frontend | React | Static files in S3, served by CloudFront, run in the visitor's browser |
 | Backend API | .NET 8 (ASP.NET Core) | Container on Lambda. The Lambda Web Adapter turns each Lambda event into a normal HTTP request to Kestrel on port 8080, so `backend/` is the same code ECS ran |
-| Data pipeline | Python | GitHub Actions or a laptop; writes `ci-graph.json` to S3, never runs on AWS |
+| Data pipeline | Python | GitHub Actions or a laptop; writes one graph per region to S3 `data/`, never runs on AWS |
 
 The ECS images (`geo-devops-demo-frontend`, `geo-devops-demo-backend`) aren't used by serverless. Lambda runs
 its own image, built from `serverless/lambda/Dockerfile` with the same `backend/` code plus the adapter.

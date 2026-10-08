@@ -89,5 +89,32 @@ python pipeline/build_ci_graph.py virginia-latest.osm.pbf maryland-latest.osm.pb
   -o build/ci-graph.json
 ```
 
-Names must match OSM's `name` tag. Each node also carries its OSM tags (`tags`), minus editing
+Names must match OSM's `name` tag.
+
+## Regions
+
+The app serves one graph per region, listed in [`backend/Data/regions.json`](../backend/Data/regions.json):
+id, label for the picker, Geofabrik extracts, state names and the output file. The weekly workflow
+builds every region in parallel and publishes each to `s3://<site bucket>/data/<file>`; a manual run can
+build just one. The default region keeps the original key, `data/ci-graph.json`.
+
+| Region id | Picker label | States | File |
+| --- | --- | --- | --- |
+| `midatlantic` (default) | DMV / Mid-Atlantic | Virginia, Maryland, District of Columbia | `ci-graph.json` |
+| `florida` | Florida | Florida | `florida.json` |
+| `texas` | Texas | Texas | `texas.json` |
+
+To add a region, add an entry to `regions.json` and to the `region` choices in
+`.github/workflows/ci-graph.yml`; nothing else changes. Until its file is published the picker shows it
+as "coming soon". The build step fails if a graph is over 5.5 MB gzipped (a Lambda response is capped
+at 6 MB); split such a region in two.
+
+Locally, build each region into the same folder and point the API at the default one; it finds the
+others next to it:
+
+```bash
+python pipeline/build_ci_graph.py florida-latest.osm.pbf --states Florida --region Florida -o build/florida.json
+CiGraph__Path=$PWD/build/ci-graph.json dotnet run --project backend
+# http://localhost:5173/?region=florida
+``` Each node also carries its OSM tags (`tags`), minus editing
 metadata such as `source`, `note`, `fixme`, `tiger:*` and translated names; the map popup lists them.

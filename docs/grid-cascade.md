@@ -25,9 +25,31 @@ worked example: a 1.25-mile square around the center of the study area.
 6. **Click any asset.** The popup lists what it depends on (distance in miles and why the link was inferred),
    what it supplies, its coordinates and a link to the OpenStreetMap feature.
 
+**Region** (top of the panel) switches between study regions: DMV / Mid-Atlantic (Virginia, Maryland and DC),
+Florida and Texas. Each is its own graph; a region not built yet shows as "coming soon". The choice goes
+in the page address (`?region=florida`), so a link opens on that region, and live hazards follow it.
+
 **Group nearby assets when zoomed out** clusters points below about 1:60,000. Untick it to see every asset.
 The tag under *Draw an area* says which graph is loaded: **SYNTHETIC SAMPLE** is the bundled made-up network
 (91 assets); otherwise it names the real region.
+
+## Live hazards
+
+Instead of drawing, you can run the cascade on a live hazard. The **Live hazards** list in the panel shows:
+
+- **National Weather Service alerts** for the graph's states (`api.weather.gov/alerts/active`): warnings, watches
+  and advisories, most severe first. Storm-based warnings come with a polygon; county- and zone-based ones
+  (hurricane, flood, winter storm) are assembled from their zone outlines when you run them.
+- **Hurricane forecast cones** from the National Hurricane Center, through Esri Living Atlas
+  ("Active Hurricanes", layer 4). Only storms whose cone reaches the study area are listed.
+
+**Run cascade** turns the hazard's outline into the area (simplified to under 3,000 vertices) and zooms to it.
+Outlines that come with the feed are drawn on the map: warnings red, watches amber, advisories yellow,
+cones purple and dashed. Each storm also gets its track, NHC style: the past track dashed grey, the forecast
+track solid, and a circle at each forecast position lettered by stage (D depression, S tropical storm,
+H hurricane, M major hurricane) with its time; click a circle for winds and pressure. **Show hazard outlines on
+map** turns all of these off and on (the list stays); the choice is remembered in the browser. The list refreshes every 5 minutes. Everything is fetched by the browser from the
+public feeds, so it adds no AWS cost.
 
 ## What happens after you draw
 
@@ -39,14 +61,14 @@ sequenceDiagram
     participant B as Browser (React + ArcGIS)
     participant CF as CloudFront
     participant L as Lambda (.NET 8 API)
-    participant S3 as S3 data/ci-graph.json
+    participant S3 as S3 data/<region>.json
     Note over B,L: Page load, once
-    B->>CF: GET /api/infrastructure/graph
+    B->>CF: GET /api/infrastructure/graph?region=…
     CF->>L: signed request
     L-->>S3: GetObject (first request, then ETag check every 15 min)
     L-->>B: whole graph (compressed, ETag)
     Note over B,L: Each drawing
-    B->>CF: POST /api/infrastructure/impact {area}
+    B->>CF: POST /api/infrastructure/impact?region=… {area}
     CF->>L: signed request
     L->>L: AreaPolygon parse, ImpactAnalyzer cascade
     L-->>B: summary + affected assets + cut lines
@@ -60,8 +82,10 @@ sequenceDiagram
 3. **Route it** (CloudFront). `/api/*` goes to Lambda; everything else is the React build in S3.
 4. **Parse the area** (`AreaPolygon.cs`). Polygon, MultiPolygon or Feature, projected to kilometres on a local
    grid for cheap containment, crossing and distance tests.
-5. **Get the graph** (`InfrastructureGraphProvider.cs`). In memory; every 15 minutes a conditional GET checks S3
-   and swaps in a new version only if the file changed. Fallbacks: `CiGraph__Path`, then the bundled sample.
+5. **Get the graph** (`InfrastructureGraphProvider.cs`). One per region (`?region=`, default DMV / Mid-Atlantic),
+   loaded on first use and kept in memory; every 15 minutes a conditional GET checks S3 and swaps in a new
+   version only if the file changed. Fallbacks: the folder of `CiGraph__Path`, then (default region only)
+   the bundled sample.
 6. **Run the cascade** (`ImpactAnalyzer.cs`). A pure function of graph and area, described next.
 7. **Return and draw.** Summary, one row per affected asset (status, hop, cause, *via*, services lost,
    distance) and cut-line IDs. The panel converts km to miles; the map and graph add their layers.
@@ -156,8 +180,9 @@ Treat results as a plausible what-if built from public map data, not a utility-g
 | --- | --- |
 | `pipeline/build_ci_graph.py` | OSM extracts -> `ci-graph.json` |
 | `pipeline/fixtures/make_sample_osm.py` | Synthetic Richmond network for tests and the bundled sample |
-| `backend/Endpoints/InfrastructureEndpoints.cs` | `GET /api/infrastructure`, `GET .../graph`, `POST .../impact` |
-| `backend/Services/InfrastructureGraphProvider.cs` | Loads and refreshes the graph (S3, local path, sample) |
+| `backend/Data/regions.json` | Study regions: picker label, states, extracts, output file |
+| `backend/Endpoints/InfrastructureEndpoints.cs` | `GET .../regions`, `GET /api/infrastructure`, `GET .../graph`, `POST .../impact`, all with `?region=` |
+| `backend/Services/InfrastructureGraphProvider.cs` | Loads and refreshes one graph per region (S3, local folder, sample) |
 | `backend/Services/InfrastructureGraph.cs` | Parses the JSON and builds lookup indexes |
 | `backend/Services/AreaPolygon.cs` | GeoJSON parsing, containment, crossing, distance, area |
 | `backend/Services/ImpactAnalyzer.cs` | The four-stage cascade |

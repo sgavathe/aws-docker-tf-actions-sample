@@ -20,6 +20,7 @@
   <ItemGroup>
     <!-- Synthetic sample graph, used when no published graph is configured -->
     <Content Update="Data\ci-graph.sample.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Update="Data\regions.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

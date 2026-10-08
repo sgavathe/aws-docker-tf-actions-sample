@@ -16,8 +16,6 @@ const assetPopup = (details) => ({
 
 const impactPopup = (details) => ({
   title: "{name}",
-  // A content function doesn't declare which fields it reads, so ask for all of them;
-  // otherwise the layer only fetches the fields named in the title.
   outFields: ["*"],
   content: ({ graphic }) => {
     const a = graphic.attributes;
@@ -42,7 +40,7 @@ const DRAW_SYMBOL = {
  * Parent drives drawing through the ref: draw("polygon" | "rectangle" | "freehandPolygon"), cancel().
  */
 const CascadeMap = forwardRef(function CascadeMap(
-  { graph, area, impact, selected, focus, cluster = true, onArea, onDrawingChange },
+  { graph, area, impact, hazards = [], fitArea = false, selected, focus, cluster = true, onArea, onDrawingChange },
   ref
 ) {
   const containerRef = useRef(null);
@@ -121,12 +119,13 @@ const CascadeMap = forwardRef(function CascadeMap(
         }),
       };
 
+      const hazardsLayer = new GraphicsLayer({ title: "Live hazards" });
       const area = new GraphicsLayer({ title: "Drawn area" });
       const cascade = new GraphicsLayer({ title: "Cascade" });
 
       view = new MapView({
         container: containerRef.current,
-        map: new Map({ basemap: basemaps[basemapRef.current], layers: [area, cascade] }),
+        map: new Map({ basemap: basemaps[basemapRef.current], layers: [hazardsLayer, area, cascade] }),
         center: [-77.436, 37.54],
         zoom: 9,
         spatialReference: { wkid: 3857 },
@@ -161,7 +160,7 @@ const CascadeMap = forwardRef(function CascadeMap(
         onAreaRef.current?.({ type: "Polygon", coordinates: rings });
       });
 
-      esri.current = { view, Graphic, FeatureLayer, LayerSearchSource, sketch, search, basemaps, layers: { area, cascade } };
+      esri.current = { view, Graphic, FeatureLayer, LayerSearchSource, sketch, search, basemaps, layers: { hazards: hazardsLayer, area, cascade } };
       setReady(true);
     })();
 
@@ -248,9 +247,10 @@ const CascadeMap = forwardRef(function CascadeMap(
     search.sources.add(assetSource, 0);
 
     const c = graph.meta?.center;
-    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100, 7 for whole states.
+    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100, 7 for whole states,
+    // 6 for the biggest (Texas).
     const radius = graph.meta?.radiusMi ?? 30;
-    const zoom = radius > 200 ? 7 : radius > 80 ? 8 : radius > 45 ? 9 : 10;
+    const zoom = radius > 350 ? 6 : radius > 200 ? 7 : radius > 80 ? 8 : radius > 45 ? 9 : 10;
     if (c) view.goTo({ center: [c.lon, c.lat], zoom }, { animate: false }).catch(() => {});
 
     return () => {
@@ -280,17 +280,47 @@ const CascadeMap = forwardRef(function CascadeMap(
     if (assets) assets.featureReduction = cluster ? CLUSTER : null;
   }, [ready, graph, cluster]);
 
-  // 3) The drawn area.
+  // 3) The drawn area (a Polygon, or a MultiPolygon when it comes from a zone-based alert).
+  useEffect(() => {
+    if (!ready) return;
+    const { Graphic, layers, view } = esri.current;
+    layers.area.removeAll();
+    if (!area) return;
+    const rings = area.type === "MultiPolygon" ? area.coordinates.flat() : area.coordinates;
+    const graphic = new Graphic({
+      geometry: { type: "polygon", rings, spatialReference: { wkid: 4326 } },
+      symbol: DRAW_SYMBOL,
+    });
+    layers.area.add(graphic);
+    if (fitArea && graphic.geometry.extent) {
+      view.goTo(graphic.geometry.extent.clone().expand(1.3)).catch(() => {});
+    }
+  }, [ready, area, fitArea]);
+
+  // 3b) Live hazard outlines (alerts that come with a polygon, hurricane cones).
   useEffect(() => {
     if (!ready) return;
     const { Graphic, layers } = esri.current;
-    layers.area.removeAll();
-    if (!area) return;
-    layers.area.add(new Graphic({
-      geometry: { type: "polygon", rings: area.coordinates, spatialReference: { wkid: 4326 } },
-      symbol: DRAW_SYMBOL,
-    }));
-  }, [ready, area]);
+    layers.hazards.removeAll();
+    for (const h of hazards) {
+      const geom = h.geometry;
+      const rings = geom.type === "MultiPolygon" ? geom.coordinates.flat()
+        : geom.type === "Polygon" ? geom.coordinates : null;
+      if (!rings) continue;
+      const c = HAZARD_COLORS[h.level] ?? HAZARD_COLORS.Statement;
+      layers.hazards.add(new Graphic({
+        geometry: { type: "polygon", rings, spatialReference: { wkid: 4326 } },
+        attributes: { event: h.event, info: [h.headline, h.areaDesc].filter(Boolean).join(" · ") },
+        symbol: {
+          type: "simple-fill",
+          color: [...c, 0.07],
+          outline: { color: [...c, 0.9], width: 1.5, style: h.level === "Cone" ? "dash" : "solid" },
+        },
+        popupTemplate: { title: "{event}", content: "{info}" },
+      }));
+      if (h.track) addTrack(Graphic, layers.hazards, h);
+    }
+  }, [ready, hazards]);
 
   // 4) Cascade: cut wires, failure links (cause -> effect) and impacted assets.
   useEffect(() => {
@@ -454,6 +484,86 @@ const CLUSTER = {
 };
 
 const WIRE_COLOR = [70, 82, 96, 0.65];
+
+// Live hazard outline colours, by alert level (NWS convention: warnings red, watches amber).
+const HAZARD_COLORS = {
+  Warning: [214, 40, 40],
+  Watch: [230, 140, 20],
+  Advisory: [200, 170, 30],
+  Statement: [110, 120, 135],
+  Cone: [130, 70, 200],
+};
+
+// Forecast-position circles, NHC style: letter = development stage, colour = intensity.
+const TRACK_COLORS = {
+  D: [70, 130, 200],   // tropical depression
+  S: [40, 160, 90],    // tropical storm
+  H: [235, 140, 20],   // hurricane
+  M: [205, 35, 35],    // major hurricane (Cat 3+)
+};
+const TRACK_OTHER = [120, 120, 130];  // post-tropical, extratropical, low
+
+const linePaths = (g) => (g.type === "LineString" ? [g.coordinates] : g.coordinates);
+
+/** Past track (dashed), forecast track (solid) and lettered forecast positions for one storm. */
+function addTrack(Graphic, layer, hazard) {
+  const { track } = hazard;
+  const storm = hazard.event.replace(/: forecast cone$/, "");
+  const line = (geoms, symbol) => {
+    for (const g of geoms) {
+      layer.add(new Graphic({
+        geometry: { type: "polyline", paths: linePaths(g), spatialReference: { wkid: 4326 } },
+        symbol,
+      }));
+    }
+  };
+  line(track.past, { type: "simple-line", color: [70, 70, 80, 0.8], width: 1.5, style: "short-dash" });
+  // Fall back to joining the positions when the track layer has nothing for this storm.
+  const forecast = track.line.length ? track.line
+    : track.points.length > 1 ? [{ type: "LineString", coordinates: track.points.map((p) => [p.lon, p.lat]) }] : [];
+  line(forecast, { type: "simple-line", color: [60, 30, 120, 0.9], width: 2 });
+
+  track.points.forEach((p, i) => {
+    const color = TRACK_COLORS[p.label] ?? TRACK_OTHER;
+    const geometry = { type: "point", longitude: p.lon, latitude: p.lat };
+    const facts = [
+      p.when && `<b>${esc(p.when)}</b>`,
+      esc(p.kind),
+      p.windMph && `Winds ${p.windMph} mph${p.gustMph ? `, gusts ${p.gustMph} mph` : ""}`,
+      p.pressureMb && `Pressure ${p.pressureMb} mb`,
+      p.tau === 0 ? "Current position" : p.tau != null ? `Forecast +${p.tau} h` : "",
+    ].filter(Boolean).join("<br/>");
+    layer.add(new Graphic({
+      geometry,
+      attributes: { title: storm, facts },
+      symbol: {
+        type: "simple-marker", style: "circle", size: i === 0 ? 18 : 15,
+        color: [...color, 0.95], outline: { color: [255, 255, 255, 1], width: 1.5 },
+      },
+      popupTemplate: { title: "{title}", content: "{facts}" },
+    }));
+    if (p.label) {
+      layer.add(new Graphic({
+        geometry,
+        attributes: { title: storm, facts },
+        popupTemplate: { title: "{title}", content: "{facts}" },
+        symbol: {
+          type: "text", text: p.label, color: [255, 255, 255, 1], yoffset: -3.5,
+          font: { size: 9, weight: "bold", family: "Avenir Next LT Pro" },
+        },
+      }));
+    }
+    if (p.short) {
+      layer.add(new Graphic({
+        geometry,
+        symbol: {
+          type: "text", text: p.short, color: [40, 30, 70, 1], xoffset: 14, horizontalAlignment: "left",
+          yoffset: -3.5, haloColor: [255, 255, 255, 0.9], haloSize: 1.5, font: { size: 8.5 },
+        },
+      }));
+    }
+  });
+}
 
 /** Width by voltage band; arrows show the inferred flow direction (higher voltage -> lower,
  *  or away from a source). Links whose direction can't be inferred are dashed. */

@@ -1,35 +1,27 @@
 name: Infrastructure graph (OpenStreetMap)
 
-# Builds the critical-infrastructure dependency graph from a Geofabrik OpenStreetMap
-# extract and publishes it for the API (serverless stack: s3://<site bucket>/data/ci-graph.json).
-# The Lambda picks up the new file within CiGraph__RefreshMinutes (15) - no redeploy needed.
+# Builds one critical-infrastructure dependency graph per study region (backend/Data/regions.json)
+# from Geofabrik OpenStreetMap extracts and publishes each for the API
+# (serverless stack: s3://<site bucket>/data/<region file>, e.g. data/ci-graph.json, data/florida.json).
+# The Lambda picks up a new file within CiGraph__RefreshMinutes (15) - no redeploy needed.
 #
 #   - Pull requests touching pipeline/: run the pipeline tests only.
-#   - Weekly schedule: rebuild with the defaults, publish when DEPLOY_TARGET = serverless.
-#   - Manual run: choose the extract, area and whether to publish.
+#   - Weekly schedule: rebuild every region, publish when DEPLOY_TARGET = serverless.
+#   - Manual run: pick one region or all, and whether to publish.
+# A circle instead of whole states (--center/--radius-mi) is still available from the CLI.
 
 on:
   pull_request:
-    paths: ["pipeline/**", ".github/workflows/ci-graph.yml"]
+    paths: ["pipeline/**", "backend/Data/regions.json", ".github/workflows/ci-graph.yml"]
   schedule:
     - cron: "17 7 * * 1"   # Mondays 07:17 UTC (Geofabrik refreshes extracts daily)
   workflow_dispatch:
     inputs:
-      extracts:
-        description: "Geofabrik extract paths, space-separated (download.geofabrik.de/<path>-latest.osm.pbf)"
-        default: "north-america/us/virginia north-america/us/maryland north-america/us/district-of-columbia"
-      states:
-        description: "Study area = these state boundaries (comma-separated OSM names). Empty = use center + radius"
-        default: "Virginia,Maryland,District of Columbia"
-      center:
-        description: "Study area center, lat,lon"
-        default: "37.5407,-77.4360"
-      radius_mi:
-        description: "Study area radius in miles"
-        default: "70"
       region:
-        description: "Name shown in the app"
-        default: "Virginia, Maryland and DC"
+        description: "Region id from backend/Data/regions.json, or all"
+        type: choice
+        options: [all, midatlantic, florida, texas]
+        default: all
       publish:
         description: "Publish to the serverless site bucket"
         type: boolean
@@ -44,20 +36,17 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Defaults (also used by the weekly run): whole states of Virginia, Maryland and DC.
-  # For a circle instead, run manually with states empty plus center and radius_mi.
-  EXTRACTS: ${{ inputs.extracts || 'north-america/us/virginia north-america/us/maryland north-america/us/district-of-columbia' }}
-  STATES: ${{ github.event_name == 'workflow_dispatch' && inputs.states || (github.event_name != 'workflow_dispatch' && 'Virginia,Maryland,District of Columbia') || '' }}
-  CENTER: ${{ inputs.center || '37.5407,-77.4360' }}
-  RADIUS_MI: ${{ inputs.radius_mi || '70' }}
-  REGION: ${{ inputs.region || 'Virginia, Maryland and DC' }}
   PROJECT_NAME: geo-devops-demo
   AWS_REGION: us-east-1
+  # A Lambda response is capped at 6 MB; the API sends the graph brotli/gzip-compressed.
+  MAX_GZIP_MB: "5.5"
 
 jobs:
-  graph:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
+    outputs:
+      regions: ${{ steps.regions.outputs.regions }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,22 +62,57 @@ jobs:
       - name: Pipeline tests (synthetic fixture)
         run: python -m pytest -q pipeline/tests
 
+      - name: Regions to build
+        id: regions
+        env:
+          WANT: ${{ inputs.region || 'all' }}
+        run: |
+          regions="$(jq -c --arg want "$WANT" \
+            '[.regions[] | select($want == "all" or .id == $want)]' backend/Data/regions.json)"
+          if [ "$regions" = "[]" ]; then echo "::error::No region '$WANT' in backend/Data/regions.json"; exit 1; fi
+          echo "regions=$regions" >> "$GITHUB_OUTPUT"
+          echo "$regions" | jq -r '.[] | "- \(.id): \(.states)"'
+
+  graph:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # Texas is the big one
+    strategy:
+      fail-fast: false     # one region failing doesn't stop the others
+      matrix:
+        region: ${{ fromJSON(needs.test.outputs.regions) }}
+    name: graph (${{ matrix.region.id }})
+    env:
+      EXTRACTS: ${{ matrix.region.extracts }}
+      STATES: ${{ matrix.region.states }}
+      REGION_NAME: ${{ matrix.region.name }}
+      OUT: build/${{ matrix.region.file }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r pipeline/requirements.txt
+
       - name: Weekly cache key
-        if: github.event_name != 'pull_request'
         id: week
         run: |
           echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
           echo "extracts=$(echo "$EXTRACTS" | tr ' /' '+-')" >> "$GITHUB_OUTPUT"
 
       - name: Cache OSM extract
-        if: github.event_name != 'pull_request'
         uses: actions/cache@v4
         with:
           path: osm
           key: osm-${{ steps.week.outputs.extracts }}-${{ steps.week.outputs.week }}
 
       - name: Download OSM extracts
-        if: github.event_name != 'pull_request'
         run: |
           mkdir -p osm
           for extract in $EXTRACTS; do
@@ -100,38 +124,36 @@ jobs:
           ls -lh osm
 
       - name: Build dependency graph
-        if: github.event_name != 'pull_request'
         run: |
-          inputs=""
-          for extract in $EXTRACTS; do inputs="$inputs osm/$(basename "$extract")-latest.osm.pbf"; done
-          # shellcheck disable=SC2086
-          if [ -n "$STATES" ]; then
-            area=(--states "$STATES")
-          else
-            area=(--center "$CENTER" --radius-mi "$RADIUS_MI")
-          fi
-          python pipeline/build_ci_graph.py $inputs "${area[@]}" --region "$REGION" \
-            -o build/ci-graph.json
+          inputs=()
+          for extract in $EXTRACTS; do inputs+=("osm/$(basename "$extract")-latest.osm.pbf"); done
+          python pipeline/build_ci_graph.py "${inputs[@]}" --states "$STATES" --region "$REGION_NAME" -o "$OUT"
 
-      - name: Summary
-        if: github.event_name != 'pull_request'
+      - name: Check size and summarize
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          import json
-          g = json.load(open("build/ci-graph.json"))
+          import gzip, json, os, sys
+          out = os.environ["OUT"]
+          raw = open(out, "rb").read()
+          gz_mb = len(gzip.compress(raw, 6)) / 1e6
+          g = json.loads(raw)
           m = g["meta"]
-          print(f"### {m['region']} ({m['radiusMi']} mi)\n")
-          print(f"{len(g['nodes'])} assets, {len(g['edges'])} links, {m['wireSegments']} mapped wire segments\n")
+          print(f"### {m['region']}\n")
+          print(f"{len(g['nodes'])} assets, {len(g['edges'])} links, {m['wireSegments']} mapped wire segments. "
+                f"{len(raw) / 1e6:.1f} MB raw, {gz_mb:.1f} MB gzip.\n")
           print("| Sector | Assets |\n|---|---|")
           for sector, n in m["nodeCounts"].items():
               print(f"| {sector} | {n} |")
+          if gz_mb > float(os.environ["MAX_GZIP_MB"]):
+              print(f"::error::{out} is {gz_mb:.1f} MB gzipped, over the {os.environ['MAX_GZIP_MB']} MB "
+                    "limit for a Lambda response. Split the region in backend/Data/regions.json.", file=sys.stderr)
+              sys.exit(1)
           EOF
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
         with:
-          name: ci-graph
-          path: build/ci-graph.json
+          name: ci-graph-${{ matrix.region.id }}
+          path: ${{ env.OUT }}
           retention-days: 30
 
       - name: Configure AWS credentials via OIDC
@@ -147,9 +169,11 @@ jobs:
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.publish) ||
           (github.event_name == 'schedule' && vars.DEPLOY_TARGET == 'serverless')
+        env:
+          FILE: ${{ matrix.region.file }}
         run: |
           account="$(aws sts get-caller-identity --query Account --output text)"
           bucket="${PROJECT_NAME}-sls-site-${account}"
-          aws s3 cp build/ci-graph.json "s3://${bucket}/data/ci-graph.json" \
+          aws s3 cp "$OUT" "s3://${bucket}/data/${FILE}" \
             --content-type application/json --cache-control "public, max-age=300"
-          echo "Published. The API serves it within 15 minutes (next graph refresh)."
+          echo "Published data/${FILE}. The API serves it within 15 minutes (next graph refresh)."
