@@ -1,16 +1,24 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { LINK_TYPES, SECTORS, STATUS, kindLabel, rgba, sectorColor, sectorLabel } from "./sectors.js";
-import { describeAssets } from "./assetDetails.js";
+import { describeAssets, esc } from "./assetDetails.js";
 
-const ASSET_POPUP = {
+// Popup bodies are built when a feature is clicked (details.get), not for every asset upfront.
+const assetPopup = (details) => ({
   title: "{name}",
-  content: "{kindLabel} ({sectorLabel}){detail}",
-};
+  content: ({ graphic }) => {
+    const a = graphic.attributes;
+    return `${esc(a.kindLabel)} (${esc(a.sectorLabel)})${details.get(a.id)}`;
+  },
+});
 
-const IMPACT_POPUP = {
+const impactPopup = (details) => ({
   title: "{name}",
-  content: "<b>{statusLabel}</b>, hop {hop}<br/>{cause}<br/>{kindLabel} ({sectorLabel}){detail}",
-};
+  content: ({ graphic }) => {
+    const a = graphic.attributes;
+    return `<b>${esc(a.statusLabel)}</b>, hop ${a.hop}<br/>${esc(a.cause)}<br/>` +
+      `${esc(a.kindLabel)} (${esc(a.sectorLabel)})${details.get(a.id)}`;
+  },
+});
 
 const DRAW_SYMBOL = {
   type: "simple-fill",
@@ -37,6 +45,11 @@ const CascadeMap = forwardRef(function CascadeMap(
   const onDrawingRef = useRef(onDrawingChange);
   const clusterRef = useRef(cluster);
   const [ready, setReady] = useState(false);
+  const [basemap, setBasemap] = useState(() => {
+    try { return localStorage.getItem("cascade.basemap") === "satellite" ? "satellite" : "map"; } catch { return "map"; }
+  });
+  const basemapRef = useRef(basemap);
+  basemapRef.current = basemap;
 
   onAreaRef.current = onArea;
   onDrawingRef.current = onDrawingChange;
@@ -69,6 +82,10 @@ const CascadeMap = forwardRef(function CascadeMap(
         { default: Graphic },
         { default: SketchViewModel },
         webMercatorUtils,
+        { default: Basemap },
+        { default: TileLayer },
+        { default: Search },
+        { default: LayerSearchSource },
       ] = await Promise.all([
         import("@arcgis/core/Map"),
         import("@arcgis/core/views/MapView"),
@@ -77,22 +94,50 @@ const CascadeMap = forwardRef(function CascadeMap(
         import("@arcgis/core/Graphic"),
         import("@arcgis/core/widgets/Sketch/SketchViewModel"),
         import("@arcgis/core/geometry/support/webMercatorUtils"),
+        import("@arcgis/core/Basemap"),
+        import("@arcgis/core/layers/TileLayer"),
+        import("@arcgis/core/widgets/Search"),
+        import("@arcgis/core/widgets/Search/LayerSearchSource"),
       ]);
       if (destroyed) return;
+
+      // Both basemaps come from Esri's public tile services; neither needs an API key.
+      const tiles = (path, opts = {}) =>
+        new TileLayer({ url: `https://services.arcgisonline.com/ArcGIS/rest/services/${path}/MapServer`, ...opts });
+      const basemaps = {
+        map: Basemap.fromId("gray-vector"),
+        satellite: new Basemap({
+          id: "satellite-labels",
+          title: "Satellite",
+          // Imagery faded over the view's light background, so assets and lines stay readable.
+          baseLayers: [tiles("World_Imagery", { opacity: 0.5 })],
+          referenceLayers: [tiles("Reference/World_Transportation"), tiles("Reference/World_Boundaries_and_Places")],
+        }),
+      };
 
       const area = new GraphicsLayer({ title: "Drawn area" });
       const cascade = new GraphicsLayer({ title: "Cascade" });
 
       view = new MapView({
         container: containerRef.current,
-        // Classic Esri basemap from public tile services, no API key (same as Harbor Watch).
-        map: new Map({ basemap: "gray-vector", layers: [area, cascade] }),
+        map: new Map({ basemap: basemaps[basemapRef.current], layers: [area, cascade] }),
         center: [-77.436, 37.54],
         zoom: 9,
         spatialReference: { wkid: 3857 },
         constraints: { snapToZoom: false },
         popup: { dockEnabled: false },
+        background: { color: [238, 241, 243, 1] },   // shows through the faded imagery
       });
+
+      // Address / place search (Esri World Geocoder, no key) plus the graph's assets by name.
+      const search = new Search({
+        view,
+        includeDefaultSources: true,
+        popupEnabled: false,
+        resultGraphicEnabled: true,
+        allPlaceholder: "Address, place or asset",
+      });
+      view.ui.add(search, { position: "top-left", index: 0 });
 
       const sketch = new SketchViewModel({
         view,
@@ -110,7 +155,7 @@ const CascadeMap = forwardRef(function CascadeMap(
         onAreaRef.current?.({ type: "Polygon", coordinates: rings });
       });
 
-      esri.current = { view, Graphic, FeatureLayer, sketch, layers: { area, cascade } };
+      esri.current = { view, Graphic, FeatureLayer, LayerSearchSource, sketch, search, basemaps, layers: { area, cascade } };
       setReady(true);
     })();
 
@@ -139,17 +184,7 @@ const CascadeMap = forwardRef(function CascadeMap(
       geometryType: "polyline",
       spatialReference: { wkid: 4326 },
       popupEnabled: false,
-      renderer: {
-        type: "unique-value",
-        field: "style",
-        defaultSymbol: { type: "simple-line", color: WIRE_COLOR, width: 1, style: "dash" },
-        // Width by voltage band; arrows show the inferred flow direction (higher voltage -> lower,
-        // or away from a source). Links whose direction can't be inferred are dashed.
-        uniqueValueInfos: Object.entries(WIRE_WIDTHS).flatMap(([band, width]) => [
-          { value: `flow:${band}`, symbol: arrowLine({ color: WIRE_COLOR, width, every: 60, arrowSize: 6 + width * 2 }) },
-          { value: `unknown:${band}`, symbol: { type: "simple-line", color: WIRE_COLOR, width, style: "dash" } },
-        ]),
-      },
+      renderer: wireRenderer(),
     });
 
     // Depends on / supplies / coordinates / OSM link, shared with the impact popups.
@@ -167,18 +202,17 @@ const CascadeMap = forwardRef(function CascadeMap(
           sector: n.sector,
           sectorLabel: sectorLabel(n.sector),
           kindLabel: kindLabel(n.kind),
-          detail: details.get(n.id) ?? "",
         },
       })),
       objectIdField: "oid",
       fields: [
         { name: "oid", type: "oid" },
-        ...["id", "name", "sector", "sectorLabel", "kindLabel", "detail"].map((name) => ({ name, type: "string" })),
+        ...["id", "name", "sector", "sectorLabel", "kindLabel"].map((name) => ({ name, type: "string" })),
       ],
       geometryType: "point",
       spatialReference: { wkid: 4326 },
       outFields: ["*"],
-      popupTemplate: ASSET_POPUP,
+      popupTemplate: assetPopup(details),
       featureReduction: clusterRef.current ? CLUSTER : null,
       renderer: {
         type: "unique-value",
@@ -193,20 +227,45 @@ const CascadeMap = forwardRef(function CascadeMap(
     view.map.addMany([wires, assets], 0);
     esri.current.base = { wires, assets };
 
+    const search = esri.current.search;
+    const assetSource = new esri.current.LayerSearchSource({
+      layer: assets,
+      name: "Infrastructure",
+      placeholder: "Substation, hospital, pump...",
+      searchFields: ["name"],
+      displayField: "name",
+      exactMatch: false,
+      outFields: ["*"],
+      maxSuggestions: 6,
+      zoomScale: 12000,
+    });
+    search.sources.add(assetSource, 0);
+
     const c = graph.meta?.center;
-    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100+.
+    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100, 7 for whole states.
     const radius = graph.meta?.radiusMi ?? 30;
-    const zoom = radius > 80 ? 8 : radius > 45 ? 9 : 10;
+    const zoom = radius > 200 ? 7 : radius > 80 ? 8 : radius > 45 ? 9 : 10;
     if (c) view.goTo({ center: [c.lon, c.lat], zoom }, { animate: false }).catch(() => {});
 
     return () => {
       // On unmount the view (and its map) may already be destroyed by effect 1's cleanup.
       if (!view.destroyed && view.map) view.map.removeMany([wires, assets]);
+      const src = esri.current?.search?.sources.find((x) => x.layer === assets);
+      if (src) esri.current.search.sources.remove(src);
       if (esri.current?.base?.assets === assets) esri.current.base = null;
       wires.destroy();
       assets.destroy();
     };
   }, [ready, graph]);
+
+  // 2a) Switch basemap.
+  useEffect(() => {
+    try { localStorage.setItem("cascade.basemap", basemap); } catch { /* private mode */ }
+    if (!ready) return;
+    const { view, basemaps } = esri.current;
+    if (view.destroyed) return;
+    view.map.basemap = basemaps[basemap];
+  }, [ready, basemap]);
 
   // 2b) Turn point clustering on or off without rebuilding the layer.
   useEffect(() => {
@@ -277,12 +336,11 @@ const CascadeMap = forwardRef(function CascadeMap(
       graphics.push(new Graphic({
         geometry: { type: "point", longitude: n.lon, latitude: n.lat },
         attributes: {
-          name: i.name, hop: i.hop, cause: i.cause,
+          id: i.id, name: i.name, hop: i.hop, cause: i.cause,
           statusLabel: STATUS[i.status].label,
           kindLabel: kindLabel(i.kind), sectorLabel: sectorLabel(i.sector),
-          detail: esri.current.details?.get(i.id) ?? "",
         },
-        popupTemplate: IMPACT_POPUP,
+        popupTemplate: impactPopup(esri.current.details ?? { get: () => "" }),
         symbol: {
           type: "simple-marker",
           size: (i.hop === 0 ? 13 : 10) + (isSelected ? 5 : 0),
@@ -310,7 +368,18 @@ const CascadeMap = forwardRef(function CascadeMap(
     esri.current.view.goTo(target, { animate: !reduceMotion, duration: 700 }).catch(() => {});
   }, [ready, focus, graph]);
 
-  return <div ref={containerRef} className="map" aria-label="Map of infrastructure and the drawn area" />;
+  return (
+    <>
+      <div ref={containerRef} className="map" aria-label="Map of infrastructure and the drawn area" />
+      <div className="basemap-switch" role="group" aria-label="Basemap">
+        {[["map", "Map"], ["satellite", "Satellite"]].map(([id, label]) => (
+          <button key={id} type="button" aria-pressed={basemap === id} onClick={() => setBasemap(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
 });
 
 /**
@@ -379,6 +448,21 @@ const CLUSTER = {
 };
 
 const WIRE_COLOR = [70, 82, 96, 0.65];
+
+/** Width by voltage band; arrows show the inferred flow direction (higher voltage -> lower,
+ *  or away from a source). Links whose direction can't be inferred are dashed. */
+function wireRenderer() {
+  const color = WIRE_COLOR;
+  return {
+    type: "unique-value",
+    field: "style",
+    defaultSymbol: { type: "simple-line", color, width: 1, style: "dash" },
+    uniqueValueInfos: Object.entries(WIRE_WIDTHS).flatMap(([band, width]) => [
+      { value: `flow:${band}`, symbol: arrowLine({ color, width, every: 60, arrowSize: 6 + width * 2 }) },
+      { value: `unknown:${band}`, symbol: { type: "simple-line", color, width, style: "dash" } },
+    ]),
+  };
+}
 const WIRE_WIDTHS = { low: 1, mid: 1.75, high: 2.75 };   // <200 kV, 200-344 kV, 345 kV+
 
 function wireStyle(edge) {
