@@ -16,6 +16,7 @@ builder.Services.AddSingleton<IHotspotService, HotspotService>();               
 builder.Services.AddScoped<RequestContext>();                                     // per-request correlation id
 builder.Services.AddScoped<IIncidentService, IncidentService>();                  // per-request business logic
 builder.Services.AddTransient<QueryValidator>();                                  // stateless helper
+builder.Services.AddSingleton(_ => GraphRegions.Load());                                       // Data/regions.json
 builder.Services.AddSingleton<IInfrastructureGraphProvider, InfrastructureGraphProvider>(); // graph cached in memory
 
 // Typed HttpClient via IHttpClientFactory (pooled handlers, central config).

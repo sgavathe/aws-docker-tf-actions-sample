@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import ViewNav from "../ViewNav.jsx";
 import CascadeGraph from "./CascadeGraph.jsx";
 import CascadeMap from "./CascadeMap.jsx";
+import HazardsPanel from "./HazardsPanel.jsx";
 import { LINK_TYPES, STATUS, kindLabel, sectorColor, sectorLabel } from "./sectors.js";
 import "./cascade.css";
 
@@ -28,6 +29,16 @@ function squareAround(lat, lon, km) {
   };
 }
 
+/** ?region=florida in the page URL picks the region (shareable links); absent = default. */
+function readRegionParam() {
+  try {
+    const id = new URLSearchParams(window.location.search).get("region");
+    return id && /^[a-z0-9-]{1,40}$/i.test(id) ? id.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 const fmt = new Intl.NumberFormat("en-US");
 
 // The API works in kilometres; the page shows US units.
@@ -43,6 +54,8 @@ const squareMiles = (km2) => {
 
 export default function CascadeApp() {
   const [graph, setGraph] = useState(null);
+  const [regions, setRegions] = useState(null);     // [{ id, label, default, available }] from the API
+  const [region, setRegion] = useState(readRegionParam); // null = the default region
   const [area, setArea] = useState(null);
   const [impact, setImpact] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -53,6 +66,9 @@ export default function CascadeApp() {
   const [focus, setFocus] = useState(null);         // ids the map should fly to
   const [showAll, setShowAll] = useState(false);
   const [graphOpen, setGraphOpen] = useState(true);
+  const [hazards, setHazards] = useState([]);       // live hazard outlines shown on the map
+  const [areaLabel, setAreaLabel] = useState(null); // set when the area came from a live hazard
+  const [fitArea, setFitArea] = useState(false);    // zoom the map to the area (hazards can be large)
   const [cluster, setCluster] = useState(() => {
     try { return localStorage.getItem("cascade.cluster") !== "off"; } catch { return true; }
   });
@@ -62,10 +78,14 @@ export default function CascadeApp() {
   };
   const mapRef = useRef(null);
   const abortRef = useRef(null);
+  const regionRef = useRef(region);
+  regionRef.current = region;
 
   useEffect(() => { document.title = "Grid Cascade: see how infrastructure failures cascade | SpatialEnable"; }, []);
 
-  const runImpact = useCallback(async (geojson) => {
+  const runImpact = useCallback(async (geojson, { label = null, fit = false } = {}) => {
+    setAreaLabel(label);
+    setFitArea(fit);
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -76,7 +96,7 @@ export default function CascadeApp() {
     setPicked(null);
     setShowAll(false);
     try {
-      const res = await api.impact(geojson, { signal: controller.signal });
+      const res = await api.impact(geojson, regionRef.current, { signal: controller.signal });
       if (!controller.signal.aborted) setImpact(res.data);
     } catch (e) {
       if (!controller.signal.aborted) {
@@ -93,12 +113,38 @@ export default function CascadeApp() {
     if (c) runImpact(squareAround(c.lat, c.lon, 1.25 * KM_PER_MI));   // 1.25-mile square
   }, [graph, runImpact]);
 
-  // Load the graph once, then open on a worked example so the page never starts empty.
+  // The region list (an older API without /regions just gets no picker).
   useEffect(() => {
-    api.infraGraph()
-      .then((r) => setGraph(r.data))
-      .catch((e) => setError(`Couldn't load the infrastructure graph. ${e.message}`));
+    api.regions().then((r) => setRegions(r.data)).catch(() => setRegions([]));
   }, []);
+
+  // Load the region's graph, then open on a worked example so the page never starts empty.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    abortRef.current?.abort();
+    mapRef.current?.cancel();
+    setGraph(null);
+    setArea(null);
+    setAreaLabel(null);
+    setImpact(null);
+    setCell(null);
+    setPicked(null);
+    setBusy(false);
+    setError("");
+    api.infraGraph(region, { signal: ctrl.signal })
+      .then((r) => setGraph(r.data))
+      .catch((e) => { if (!ctrl.signal.aborted) setError(`Couldn't load the infrastructure graph. ${e.message}`); });
+    return () => ctrl.abort();
+  }, [region]);
+
+  const chooseRegion = (id) => {
+    const isDefault = regions?.find((r) => r.id === id)?.default;
+    const url = new URL(window.location.href);
+    if (isDefault) url.searchParams.delete("region"); else url.searchParams.set("region", id);
+    window.history.replaceState(null, "", url);
+    setRegion(isDefault ? null : id);
+  };
+  const currentRegion = regions?.find((r) => (region ? r.id === region : r.default));
   useEffect(() => {
     if (graph && !area) example();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,6 +158,7 @@ export default function CascadeApp() {
     abortRef.current?.abort();
     mapRef.current?.cancel();
     setArea(null);
+    setAreaLabel(null);
     setImpact(null);
     setCell(null);
     setPicked(null);
@@ -155,6 +202,19 @@ export default function CascadeApp() {
           <p className="lede">Draw an area to see which power, water and communications services fail, and how far the failure travels.</p>
         </header>
 
+        {regions?.length > 1 && (
+          <section className="block region-pick">
+            <label htmlFor="region-select">Region</label>
+            <select id="region-select" value={currentRegion?.id ?? ""} onChange={(e) => chooseRegion(e.target.value)}>
+              {regions.map((r) => (
+                <option key={r.id} value={r.id} disabled={!r.available}>
+                  {r.label}{r.available ? "" : " (coming soon)"}
+                </option>
+              ))}
+            </select>
+          </section>
+        )}
+
         <section className="block" aria-labelledby="draw-h">
           <h2 id="draw-h">Draw an area</h2>
           <div className="tools" role="group" aria-label="Drawing tools">
@@ -178,6 +238,13 @@ export default function CascadeApp() {
           </div>
         </section>
 
+        <HazardsPanel
+          graph={graph}
+          busy={busy}
+          onRun={(geo, label) => { setDrawingTool(null); mapRef.current?.cancel(); runImpact(geo, { label, fit: true }); }}
+          onHazards={setHazards}
+        />
+
         {meta && (
           <section className="block source" aria-label="About the data">
             <p>
@@ -195,7 +262,8 @@ export default function CascadeApp() {
 
         <section className="block" aria-live="polite" aria-labelledby="impact-h">
           <h2 id="impact-h">{busy ? "Tracing the cascade…" : s ? "Impact" : "No area yet"}</h2>
-          {!s && !busy && <p className="muted">Pick a drawing tool, or run the example.</p>}
+          {!s && !busy && <p className="muted">Pick a drawing tool, run the example, or run a live hazard.</p>}
+          {areaLabel && <p className="area-label">Area: {areaLabel}</p>}
           {s && (
             <>
               <dl className="kpis">
@@ -292,6 +360,8 @@ export default function CascadeApp() {
             graph={graph}
             area={area}
             impact={impact}
+            hazards={hazards}
+            fitArea={fitArea}
             selected={selected}
             focus={focus}
             cluster={cluster}

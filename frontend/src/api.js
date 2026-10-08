@@ -56,8 +56,10 @@ export const api = {
   weather: ({ lat, lon }, opts) => getJson(`/api/weather?${qs({ lat, lon })}`, opts),
 
   // Critical-infrastructure dependency graph (see pipeline/ and InfrastructureEndpoints.cs)
-  infraGraph: (opts) => getJson("/api/infrastructure/graph", opts),
-  impact: (area, opts) => postJson("/api/infrastructure/impact", { area }, opts),
+  // region = id from /regions (Data/regions.json); omitted = the default region
+  regions: (opts) => getJson("/api/infrastructure/regions", opts),
+  infraGraph: (region, opts) => getJson(`/api/infrastructure/graph?${qs({ region })}`, opts),
+  impact: (area, region, opts) => postJson(`/api/infrastructure/impact?${qs({ region })}`, { area }, opts),
 };
 
 export const TYPE_COLORS = {

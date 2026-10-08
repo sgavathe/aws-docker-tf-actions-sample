@@ -11,6 +11,12 @@
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
+/* ---------- Region picker ---------- */
+.region-pick { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; padding-top: 14px; padding-bottom: 14px; }
+.region-pick label { font-size: 13px; color: var(--mist); text-transform: uppercase; letter-spacing: 0.06em; }
+.region-pick select { width: 100%; font-weight: 600; cursor: pointer; }
+.region-pick select:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
 /* ---------- Drawing tools ---------- */
 .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
 .tool {
@@ -186,3 +192,32 @@
   .stage-split { grid-template-rows: 55vh auto; }
   .graph-panel { max-height: none; }
 }
+
+/* ---------- Live hazards ---------- */
+.hazards-head { display: flex; align-items: baseline; justify-content: space-between; }
+.hazard-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+.hazard-list li {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  padding: 7px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.hz-tag {
+  font: 700 10px/1 var(--font-display); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 4px 6px; border-radius: 3px; color: #fff;
+}
+.hz-warning { background: #b8232a; }
+.hz-watch { background: #b8700f; }
+.hz-advisory { background: #8a7a17; }
+.hz-statement { background: #4f5b68; }
+.hz-cone { background: #6a3fb0; }
+.hz-main { display: flex; flex-direction: column; min-width: 0; }
+.hz-title { font-weight: 600; font-size: 14px; line-height: 1.25; }
+.hz-sub { font-size: 12px; color: var(--mist); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hz-run {
+  border: 1px solid rgba(255, 255, 255, 0.22); background: var(--harbor-2); color: var(--signal);
+  font: 600 12px/1 var(--font-display); padding: 6px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.hz-run:hover:not(:disabled) { border-color: var(--signal); }
+.hz-run:disabled { opacity: 0.5; cursor: default; }
+.hz-credit { font-size: 11px; margin-top: 6px; }
+.hz-credit a { color: var(--mist); }
+.area-label { font-size: 13px; color: var(--signal); margin: 0 0 8px; }

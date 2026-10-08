@@ -1,0 +1,30 @@
+{
+  "_comment": "Study regions. One graph per region: the weekly workflow (ci-graph.yml) builds each from its Geofabrik extracts and state boundaries and publishes it to s3://<site bucket>/data/<file>; the API serves it at /api/infrastructure/graph?region=<id>. The default region keeps the original file name.",
+  "regions": [
+    {
+      "id": "midatlantic",
+      "label": "DMV / Mid-Atlantic",
+      "name": "Virginia, Maryland and DC",
+      "states": "Virginia,Maryland,District of Columbia",
+      "extracts": "north-america/us/virginia north-america/us/maryland north-america/us/district-of-columbia",
+      "file": "ci-graph.json",
+      "default": true
+    },
+    {
+      "id": "florida",
+      "label": "Florida",
+      "name": "Florida",
+      "states": "Florida",
+      "extracts": "north-america/us/florida",
+      "file": "florida.json"
+    },
+    {
+      "id": "texas",
+      "label": "Texas",
+      "name": "Texas",
+      "states": "Texas",
+      "extracts": "north-america/us/texas",
+      "file": "texas.json"
+    }
+  ]
+}
