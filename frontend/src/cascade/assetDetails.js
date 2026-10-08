@@ -4,7 +4,7 @@
 const TYPE_WORDS = { power: "Power", water: "Water", comms: "Comms" };
 const MAX_LISTED = 8;
 
-const esc = (s) =>
+export const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 /** Great-circle distance in miles. */
@@ -16,10 +16,40 @@ export function milesBetween(a, b) {
   return 2 * 3958.8 * Math.asin(Math.sqrt(h));
 }
 
-// Pipeline reasons end in ", 7.1 km"; the popup already shows the distance in miles.
-const reason = (basis) => String(basis ?? "").replace(/,\s*\d+(?:\.\d+)?\s*km\s*$/, "");
+// Pipeline reasons are written in metric ("nearest substation, 7.1 km", "... 450 m").
+// The popup already shows the distance in miles, so a trailing distance is dropped and
+// any other metric distance is converted to miles.
+const KM_PER_MI = 1.609344;
+const toMiles = (km) => {
+  const mi = km / KM_PER_MI;
+  return mi >= 10 ? `${Math.round(mi)} mi` : `${mi.toFixed(1)} mi`;
+};
+const reason = (basis) =>
+  String(basis ?? "")
+    .replace(/,\s*\d+(?:\.\d+)?\s*(?:km|m)\s*$/i, "")
+    .replace(/(\d+(?:\.\d+)?)\s*km\b/gi, (_, n) => toMiles(Number(n)))
+    .replace(/(\d+(?:\.\d+)?)\s*m\b/g, (_, n) => toMiles(Number(n) / 1000));
 
 const fmtMi = (mi) => (mi >= 10 ? `${Math.round(mi)} mi` : `${mi.toFixed(1)} mi`);
+
+/** "123 Main St, Richmond, VA 23219" from addr:* tags, or "" */
+function addressOf(t) {
+  const street = [t["addr:housenumber"], t["addr:street"]].filter(Boolean).join(" ");
+  const place = [t["addr:city"], [t["addr:state"], t["addr:postcode"]].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [street, place].filter(Boolean).join(", ");
+}
+
+/** Tag value as HTML; website-like values become links. */
+function linkify(key, value) {
+  if (/^(website|url|contact:website)$/.test(key) && /^https?:\/\//i.test(value)) {
+    return `<a href="${esc(value)}" target="_blank" rel="noopener noreferrer">${esc(value)}</a>`;
+  }
+  if (key === "wikipedia" && /^[a-z-]+:.+/.test(value)) {
+    const [lang, title] = [value.slice(0, value.indexOf(":")), value.slice(value.indexOf(":") + 1)];
+    return `<a href="https://${esc(lang)}.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(" ", "_"))}" target="_blank" rel="noopener noreferrer">${esc(value)}</a>`;
+  }
+  return esc(value);
+}
 
 /** "w123" -> https://www.openstreetmap.org/way/123 */
 export function osmUrl(osm) {
@@ -28,7 +58,11 @@ export function osmUrl(osm) {
   return `https://www.openstreetmap.org/${{ n: "node", w: "way", r: "relation" }[m[1]]}/${m[2]}`;
 }
 
-/** Map of node id -> HTML snippet appended to the popup ("<br/>..." sections). */
+/**
+ * Popup detail for each asset ("<br/>..." sections), built on first use and cached:
+ * a state-wide graph has ~15k assets, most of which are never clicked.
+ *   const details = describeAssets(graph); details.get(nodeId) -> HTML string
+ */
 export function describeAssets(graph) {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const feeds = new Map();     // id -> edges into it (it depends on e.from)
@@ -48,9 +82,9 @@ export function describeAssets(graph) {
   }
 
   const sample = Boolean(graph.meta?.sample);
-  const out = new Map();
+  const cache = new Map();
 
-  for (const n of graph.nodes) {
+  function render(n) {
     const parts = [];
 
     const facts = [
@@ -58,6 +92,14 @@ export function describeAssets(graph) {
       n.outputMw ? `${n.outputMw} MW` : "",
     ].filter(Boolean);
     if (facts.length) parts.push(facts.join(" · "));
+    const tags = n.tags ?? {};
+    const operator = tags.operator || tags.owner;
+    if (operator) parts.push(`<b>Operator:</b> ${esc(operator)}`);
+    const fuel = tags["plant:source"] || tags["generator:source"];
+    if (fuel) parts.push(`<b>Fuel:</b> ${esc(fuel.replaceAll(";", ", "))}`);
+    if (tags.substation) parts.push(`<b>Substation type:</b> ${esc(tags.substation)}`);
+    const address = addressOf(tags);
+    if (address) parts.push(`<b>Address:</b> ${esc(address)}`);
     if (n.source) parts.push(`<b>Power source:</b> ${esc(n.source)}`);
     if (n.backup?.length) parts.push(`<b>Has backup for:</b> ${esc(n.backup.join(", "))}`);
 
@@ -98,7 +140,27 @@ export function describeAssets(graph) {
     if (url) parts.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">View on OpenStreetMap</a>`);
     else if (sample) parts.push(`<span style="opacity:.7">Synthetic sample asset</span>`);
 
-    out.set(n.id, parts.map((p) => `<br/>${p}`).join(""));
+    const tagRows = Object.entries(tags);
+    if (tagRows.length) {
+      parts.push(
+        `<details><summary>All OpenStreetMap tags (${tagRows.length})</summary>` +
+        `<table style="font-size:12px;border-collapse:collapse">` +
+        tagRows.map(([k, v]) =>
+          `<tr><td style="opacity:.7;padding:1px 8px 1px 0;vertical-align:top">${esc(k)}</td>` +
+          `<td style="padding:1px 0;word-break:break-word">${linkify(k, v)}</td></tr>`).join("") +
+        `</table></details>`);
+    }
+
+    return parts.map((p) => `<br/>${p}`).join("");
   }
-  return out;
+
+  return {
+    get(id) {
+      if (!cache.has(id)) {
+        const n = byId.get(id);
+        cache.set(id, n ? render(n) : "");
+      }
+      return cache.get(id);
+    },
+  };
 }
