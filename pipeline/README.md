@@ -66,3 +66,13 @@ Every edge carries a `basis` string saying why it exists.
   view of a real city deserves some thought before it goes on a public URL.
 
 Data © OpenStreetMap contributors, ODbL 1.0.
+
+## Checking a built graph
+
+```bash
+python pipeline/graph_report.py build/ci-graph.json --csv build/gaps.csv
+```
+
+Reports isolated assets, grid groups cut off from the rest, energy assets with no path to a power
+source, consumers missing a service, and links with unknown flow direction. The CSV lists each one with
+its OpenStreetMap link. Keep it in `build/` (git-ignored): it is built from real data.

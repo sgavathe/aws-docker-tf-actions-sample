@@ -32,7 +32,7 @@ import json
 import math
 import re
 import sys
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +62,7 @@ WANTED_TAGS = [
 ]
 
 LINE_VALUES = {"line", "cable", "minor_line"}
+SEWER_NAME = re.compile(r"\b(sewer|sewage|sanitary|wastewater|waste water|lift station|storm ?water|effluent)\b")
 
 
 def classify(tags: dict[str, str]) -> tuple[str, str] | None:
@@ -77,8 +78,10 @@ def classify(tags: dict[str, str]) -> tuple[str, str] | None:
     if mm == "wastewater_plant":
         return "water", "wastewater_plant"
     if mm == "pumping_station":
-        substance = (tags.get("substance") or tags.get("pumping_station") or "water").lower()
-        if any(s in substance for s in ("sewage", "wastewater", "storm")):
+        substance = (tags.get("substance") or tags.get("pumping_station") or "").lower()
+        # Many stations carry no substance tag; their name usually says what they pump.
+        name = (tags.get("name") or "").lower()
+        if any(s in substance for s in ("sewage", "wastewater", "storm")) or SEWER_NAME.search(name):
             return "water", "sewage_pumping"
         if any(s in substance for s in ("gas", "oil", "fuel")):
             return None
@@ -119,30 +122,35 @@ BACKUP = {
 }
 
 # Inferred cross-sector dependencies: consumer kind -> list of
-# (dependency type, supplier kinds in preference order, max distance km).
-# The nearest supplier of the first kind found within range is used.
-DEPENDENCY_RULES: dict[str, list[tuple[str, list[str], float]]] = {
-    "water_treatment":   [("power", ["substation"], 8)],
-    "wastewater_plant":  [("power", ["substation"], 8)],
-    "pumping_station":   [("power", ["substation"], 8), ("water", ["water_treatment"], 40)],
-    "sewage_pumping":    [("power", ["substation"], 8)],
-    "water_tower":       [("water", ["pumping_station", "water_treatment"], 15)],
-    "telecom_exchange":  [("power", ["substation"], 8)],
-    "comm_tower":        [("power", ["substation"], 8), ("comms", ["telecom_exchange"], 25)],
-    "data_center":       [("power", ["substation"], 8), ("comms", ["telecom_exchange"], 25)],
-    "hospital":          [("power", ["substation"], 8),
-                          ("water", ["water_tower", "pumping_station", "water_treatment"], 10),
-                          ("comms", ["telecom_exchange"], 25)],
-    "fire_station":      [("power", ["substation"], 8),
-                          ("water", ["water_tower", "pumping_station", "water_treatment"], 10),
-                          ("comms", ["telecom_exchange"], 25)],
-    "police":            [("power", ["substation"], 8), ("comms", ["telecom_exchange"], 25)],
-    "ambulance_station": [("power", ["substation"], 8), ("comms", ["telecom_exchange"], 25)],
+# (dependency type, [(supplier kind, max distance km[, FALLBACK]), ...] in preference order).
+# The first option with a supplier in range wins. Options marked FALLBACK cover areas where
+# OSM is thin (telecom exchanges especially) and say so in the edge's `basis`.
+FALLBACK = True
+WATER_SOURCES = [("water_tower", 10), ("pumping_station", 10), ("water_treatment", 10),
+                 ("water_tower", 20, FALLBACK), ("pumping_station", 20, FALLBACK)]
+COMMS_SOURCES = [("telecom_exchange", 25), ("comm_tower", 10, FALLBACK)]   # radio/cell when no exchange is mapped
+POWER = [("substation", 8), ("substation", 15, FALLBACK)]                    # rural feeders run long
+DEPENDENCY_RULES: dict[str, list[tuple[str, list[tuple]]]] = {
+    "water_treatment":   [("power", POWER)],
+    "wastewater_plant":  [("power", POWER)],
+    "pumping_station":   [("power", POWER), ("water", [("water_treatment", 40)])],
+    "sewage_pumping":    [("power", POWER)],
+    "water_tower":       [("water", [("pumping_station", 15), ("water_treatment", 15),
+                                     ("pumping_station", 30, FALLBACK), ("water_treatment", 30, FALLBACK)])],
+    "telecom_exchange":  [("power", POWER)],
+    "comm_tower":        [("power", POWER), ("comms", [("telecom_exchange", 25), ("telecom_exchange", 50, FALLBACK)])],
+    "data_center":       [("power", POWER), ("comms", COMMS_SOURCES)],
+    "hospital":          [("power", POWER), ("water", WATER_SOURCES), ("comms", COMMS_SOURCES)],
+    "fire_station":      [("power", POWER), ("water", WATER_SOURCES), ("comms", COMMS_SOURCES)],
+    "police":            [("power", POWER), ("comms", COMMS_SOURCES)],
+    "ambulance_station": [("power", POWER), ("comms", COMMS_SOURCES)],
 }
 
 SNAP_END_M = 60       # a wire ending this close to a substation/plant connects to it
 SNAP_PASS_M = 10      # a wire passing this close (inside the fence) also connects
 DIST_LINK_KM = 15     # substation with no mapped wires -> nearest wired substation
+PLANT_TIE_KM = 3      # plant with no mapped wires -> nearest substation (its grid connection)
+ISLAND_LINK_KM = 15   # wired group with no power source -> nearest powered substation
 DEDUPE_M = 150        # same-kind point + polygon closer than this are one asset
 SIMPLIFY_M = 20       # wire geometry simplification for the output
 MIN_SOURCE_MW = 20    # plants at least this big count as power sources (rooftop solar doesn't)
@@ -467,6 +475,64 @@ def build_grid(assets: list[Asset], lines, core: object, to_ll, min_source_mw: f
                 edges.append({"from": g, "to": t, "type": "power", "kind": "distribution_link",
                               "directed": True, "voltageKv": None,
                               "basis": f"no wires mapped; nearest wired substation, {d / 1000:.1f} km"})
+
+    substations = [t for t in terminals if t.kind == "substation"]
+    if not substations:
+        return edges
+    stree = STRtree([t.pt for t in substations])
+
+    # Plants with no mapped wires: assume they connect at the nearest substation.
+    for t in terminals:
+        if t.kind != "plant" or t.osm in tadj:
+            continue
+        s = substations[int(stree.nearest(t.pt))]
+        d = s.pt.distance(t.pt)
+        if d <= PLANT_TIE_KM * 1000:
+            edges.append({"from": t, "to": s, "type": "power", "kind": "distribution_link",
+                          "directed": True, "voltageKv": None,
+                          "basis": f"no wires mapped; plant tied to nearest substation, {d / 1000:.1f} km"})
+
+    # Wired groups with no power source of their own (usually an OSM gap cut them off):
+    # join each to the nearest substation that is in a powered group.
+    adj = defaultdict(set)
+    for e in edges:
+        adj[id(e["from"])].add(id(e["to"]))
+        adj[id(e["to"])].add(id(e["from"]))
+    by_pyid = {id(t): t for t in terminals}
+    group: dict[int, int] = {}
+    members: dict[int, list] = {}
+    for start in adj:
+        if start in group:
+            continue
+        gid, q = len(members), deque([start])
+        group[start], members[gid] = gid, []
+        while q:
+            u = q.popleft()
+            members[gid].append(by_pyid[u])
+            for v in adj[u]:
+                if v not in group:
+                    group[v] = gid
+                    q.append(v)
+    powered = {gid for gid, ms in members.items() if any(m.source for m in ms)}
+    hubs = [t for t in substations if group.get(id(t)) in powered]
+    if hubs:
+        htree = STRtree([t.pt for t in hubs])
+        for gid, ms in members.items():
+            if gid in powered:
+                continue
+            best = None
+            for m in ms:
+                if m.kind != "substation":
+                    continue
+                h = hubs[int(htree.nearest(m.pt))]
+                d = h.pt.distance(m.pt)
+                if best is None or d < best[0]:
+                    best = (d, h, m)
+            if best and best[0] <= ISLAND_LINK_KM * 1000:
+                d, h, m = best
+                edges.append({"from": h, "to": m, "type": "power", "kind": "distribution_link",
+                              "directed": True, "voltageKv": None,
+                              "basis": f"no mapped connection to a power source; nearest powered substation, {d / 1000:.1f} km"})
     return edges
 
 
@@ -480,22 +546,26 @@ def build_dependencies(assets: list[Asset]) -> list[dict]:
         by_kind[a.kind].append(a)
     trees = {k: STRtree([a.pt for a in v]) for k, v in by_kind.items()}
 
+    def nearest(kind: str, consumer: Asset):
+        """Nearest asset of `kind` and its distance in metres (no rule maps a kind onto itself)."""
+        if kind not in trees:
+            return None, None
+        sup = by_kind[kind][int(trees[kind].nearest(consumer.pt))]
+        return sup, sup.pt.distance(consumer.pt)
+
     edges = []
     for consumer in assets:
-        for dep_type, supplier_kinds, max_km in DEPENDENCY_RULES.get(consumer.kind, []):
-            for sk in supplier_kinds:
-                if sk not in trees:
+        for dep_type, options in DEPENDENCY_RULES.get(consumer.kind, []):
+            for sk, max_km, *flags in options:
+                sup, d = nearest(sk, consumer)
+                if sup is None or d > max_km * 1000:
                     continue
-                i = trees[sk].nearest(consumer.pt)
-                sup = by_kind[sk][int(i)]
-                if sup is consumer:
-                    continue
-                d = sup.pt.distance(consumer.pt)
-                if d <= max_km * 1000:
-                    edges.append({"from": sup, "to": consumer, "type": dep_type,
-                                  "kind": "service", "directed": True, "voltageKv": None,
-                                  "basis": f"nearest {sk.replace('_', ' ')}, {d / 1000:.1f} km"})
-                    break
+                basis = f"nearest {sk.replace('_', ' ')}, {d / 1000:.1f} km"
+                if flags and flags[0] is FALLBACK:
+                    basis += " (fallback: nothing closer in OSM)"
+                edges.append({"from": sup, "to": consumer, "type": dep_type,
+                              "kind": "service", "directed": True, "voltageKv": None, "basis": basis})
+                break
     return edges
 
 
@@ -530,9 +600,11 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
     grid_edges = build_grid(assets, lines, core, to_ll, min_source_mw, min_tie_kv)
     dep_edges = build_dependencies(assets)
 
-    # Only keep assets that take part in at least one dependency, plus all energy assets.
+    # Keep assets that take part in at least one link, plus power sources. An asset with no
+    # link can't fail in a cascade or cause one, so it would only be a lone dot on the map.
     used = {id(e["from"]) for e in grid_edges + dep_edges} | {id(e["to"]) for e in grid_edges + dep_edges}
-    keep = [a for a in assets if id(a) in used or a.sector == "energy"]
+    keep = [a for a in assets if id(a) in used or a.source]
+    dropped = Counter(a.kind for a in assets if not (id(a) in used or a.source))
     keep.sort(key=lambda a: (a.sector, a.kind, a.osm))
     for i, a in enumerate(keep):
         a.id = f"n{i}"
@@ -587,6 +659,7 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
             "edgeCount": len(edges),
             "powerSources": sum(1 for n in nodes if n.get("source")),
             "wireSegments": len(lines),
+            "droppedUnlinked": dict(sorted(dropped.items())),
         },
         "nodes": nodes,
         "edges": edges,
