@@ -114,17 +114,24 @@ How the pipeline builds the graph:
    diesel, hydro, biomass, waste). Rooftop solar doesn't count. Substations with a 115 kV+ wire leaving the area.
 5. **Set flow direction.** Higher voltage feeds lower; otherwise the side nearer a source feeds the other;
    otherwise undirected.
-6. **Feed unwired substations** from the nearest wired one within 15 km.
-7. **Add cross-sector dependencies:** each consumer links to the nearest supplier within range.
+6. **Fill OSM gaps in the grid.** Unwired substations are fed from the nearest wired one within 15 km;
+   unwired plants are tied to the nearest substation within 3 km; a wired group with no power source of its
+   own is joined to the nearest powered substation within 15 km. Each such link says so in its popup.
+7. **Add cross-sector dependencies:** each consumer links to the nearest supplier, trying the options below
+   in order. Options marked *fallback* cover areas where OSM is thin and are labelled in the popup.
+8. **Drop unlinked assets.** Anything with no link at all (and not a power source) can't fail or cause a
+   failure, so it's left out; `meta.droppedUnlinked` counts them.
 
 | Consumer | Power from | Water from | Comms from |
 | --- | --- | --- | --- |
-| Water treatment, wastewater plant, sewage pump | substation ≤ 8 km | | |
-| Water pumping station | substation ≤ 8 km | treatment plant ≤ 40 km | |
-| Water tower | | pumping station or treatment plant ≤ 15 km | |
-| Telecom exchange | substation ≤ 8 km | | |
-| Cell tower, data center, police, ambulance | substation ≤ 8 km | | exchange ≤ 25 km |
-| Hospital, fire station | substation ≤ 8 km | tower, pumping station or plant ≤ 10 km | exchange ≤ 25 km |
+| Water treatment, wastewater plant, sewage pump, telecom exchange | substation ≤ 8 km (fallback ≤ 15) | | |
+| Water pumping station | substation ≤ 8 km (fallback ≤ 15) | treatment plant ≤ 40 km | |
+| Water tower | | pumping station or treatment plant ≤ 15 km (fallback ≤ 30) | |
+| Cell tower | substation ≤ 8 km (fallback ≤ 15) | | exchange ≤ 25 km (fallback ≤ 50) |
+| Data center, police, ambulance | substation ≤ 8 km (fallback ≤ 15) | | exchange ≤ 25 km, fallback: cell tower ≤ 10 km |
+| Hospital, fire station | substation ≤ 8 km (fallback ≤ 15) | tower, pumping station or plant ≤ 10 km (fallback ≤ 20) | exchange ≤ 25 km, fallback: cell tower ≤ 10 km |
+
+To see how connected a built graph is, and why: `python pipeline/graph_report.py build/ci-graph.json --csv build/gaps.csv`.
 
 The app shows distances in miles (8 km ≈ 5 mi, 25 km ≈ 15.5 mi). Refreshing the data: see
 [pipeline/README.md](../pipeline/README.md).

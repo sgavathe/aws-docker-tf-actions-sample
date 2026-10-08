@@ -128,3 +128,51 @@ def test_overlapping_extracts_are_not_double_counted(tmp_path):
     twice = build_ci_graph.build([str(osm), str(osm)], (37.5407, -77.4360), 30, "t")
     assert len(twice["nodes"]) == len(once["nodes"])
     assert len(twice["edges"]) == len(once["edges"])
+
+
+def test_unwired_plant_is_tied_to_nearest_substation(graph):
+    edges = links(graph, "distribution_link")
+    assert ("Sample Eastgate Community Solar", "Sample Eastgate Substation") in edges
+
+
+def test_island_without_a_source_joins_the_powered_grid(graph):
+    names = {n["id"]: n["name"] for n in graph["nodes"]}
+    joins = [e for e in graph["edges"] if "nearest powered substation" in e["basis"]]
+    assert any(names[e["to"]] in {"Sample Bottoms Bridge Substation", "Sample Providence Forge Substation"}
+               for e in joins)
+    # every wired energy asset can now reach a power source
+    adj = {}
+    for e in graph["edges"]:
+        if e["kind"] in ("grid_link", "distribution_link"):
+            adj.setdefault(e["from"], set()).add(e["to"])
+            adj.setdefault(e["to"], set()).add(e["from"])
+    on = [n["id"] for n in graph["nodes"] if n.get("source")]
+    seen = set(on)
+    while on:
+        for v in adj.get(on.pop(), ()):
+            if v not in seen:
+                seen.add(v)
+                on.append(v)
+    assert set(adj) <= seen
+
+
+def test_assets_with_no_link_are_dropped(graph):
+    assert "Sample Grocery Rooftop Solar" not in by_name(graph)          # 350 kW, nothing within 3 km
+    assert graph["meta"]["droppedUnlinked"].get("plant", 0) >= 1
+    linked = {e["from"] for e in graph["edges"]} | {e["to"] for e in graph["edges"]}
+    assert all(n["id"] in linked or n.get("source") for n in graph["nodes"])
+
+
+def test_fallback_links_are_labelled():
+    assert any(opt[-1] is build_ci_graph.FALLBACK for _, opts in build_ci_graph.DEPENDENCY_RULES["hospital"]
+               for opt in opts if len(opt) == 3)
+
+
+def test_sewer_stations_are_classified_by_name_when_untagged():
+    c = build_ci_graph.classify
+    assert c({"man_made": "pumping_station", "name": "Four Mile Creek Sewer Pumping Station"}) == ("water", "sewage_pumping")
+    assert c({"man_made": "pumping_station", "name": "Oak Hill Lift Station"}) == ("water", "sewage_pumping")
+    assert c({"man_made": "pumping_station", "name": "Elm St Stormwater Pump"}) == ("water", "sewage_pumping")
+    assert c({"man_made": "pumping_station", "name": "Northside Booster Pump Station"}) == ("water", "pumping_station")
+    assert c({"man_made": "pumping_station"}) == ("water", "pumping_station")
+    assert c({"man_made": "pumping_station", "substance": "gas"}) is None

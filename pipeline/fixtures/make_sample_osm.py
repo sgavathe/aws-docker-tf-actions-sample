@@ -97,6 +97,7 @@ def main(path):
         "P1": (5, -15, "Sample James Bend Generating Station", "gas", None),
         "P2": (-20, 28, "Sample Hanover Solar Farm", "solar", "80 MW"),
         "P3": (-9, 6, "Sample Grocery Rooftop Solar", "solar", "350 kW"),   # too small to be a source
+        "P4": (13.5, 13.2, "Sample Eastgate Community Solar", "solar", "5 MW"),  # no wires; 1.9 km from Eastgate
     }
     centre = {}
     for k, (dx, dy, name, volt) in subs.items():
@@ -107,7 +108,7 @@ def main(path):
         tags = {"power": "plant", "name": name, "plant:source": src}
         if output:
             tags["plant:output:electricity"] = output
-        o.polygon(dx, dy, 0.8 if k != "P3" else 0.1, tags)
+        o.polygon(dx, dy, 0.8 if k not in ("P3", "P4") else 0.1, tags)
         centre[k] = (dx, dy)
 
     def wire(points, volt, name=None):
@@ -162,6 +163,12 @@ def main(path):
                            {"power": "tower"}) for t in (0.33, 0.66)] + [o.node(*centre["M"])]
     o.way(refs, {"power": "line", "voltage": "115000", "name": "Sample Church Hill Tap"})
     del be
+    # A wired pair with no source of its own: the line that would join it to the grid isn't mapped.
+    for k, (dx, dy, name) in {"X1": (30, 10, "Sample Bottoms Bridge Substation"),
+                              "X2": (33, 14, "Sample Providence Forge Substation")}.items():
+        o.polygon(dx, dy, 0.25, {"power": "substation", "name": name, "voltage": "115000;34500"})
+        centre[k] = (dx, dy)
+    wire(W("X1", "X2"), "115000")
 
     # Distribution substations with no wires mapped (common in real OSM data).
     for n, (dx, dy) in enumerate([(-28, -14), (-22, 18), (-3, 12), (6, 25), (19, 8),
