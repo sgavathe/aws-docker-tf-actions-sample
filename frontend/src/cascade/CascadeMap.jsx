@@ -1,16 +1,24 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { LINK_TYPES, SECTORS, STATUS, kindLabel, rgba, sectorColor, sectorLabel } from "./sectors.js";
-import { describeAssets } from "./assetDetails.js";
+import { describeAssets, esc } from "./assetDetails.js";
 
-const ASSET_POPUP = {
+// Popup bodies are built when a feature is clicked (details.get), not for every asset upfront.
+const assetPopup = (details) => ({
   title: "{name}",
-  content: "{kindLabel} ({sectorLabel}){detail}",
-};
+  content: ({ graphic }) => {
+    const a = graphic.attributes;
+    return `${esc(a.kindLabel)} (${esc(a.sectorLabel)})${details.get(a.id)}`;
+  },
+});
 
-const IMPACT_POPUP = {
+const impactPopup = (details) => ({
   title: "{name}",
-  content: "<b>{statusLabel}</b>, hop {hop}<br/>{cause}<br/>{kindLabel} ({sectorLabel}){detail}",
-};
+  content: ({ graphic }) => {
+    const a = graphic.attributes;
+    return `<b>${esc(a.statusLabel)}</b>, hop ${a.hop}<br/>${esc(a.cause)}<br/>` +
+      `${esc(a.kindLabel)} (${esc(a.sectorLabel)})${details.get(a.id)}`;
+  },
+});
 
 const DRAW_SYMBOL = {
   type: "simple-fill",
@@ -194,18 +202,17 @@ const CascadeMap = forwardRef(function CascadeMap(
           sector: n.sector,
           sectorLabel: sectorLabel(n.sector),
           kindLabel: kindLabel(n.kind),
-          detail: details.get(n.id) ?? "",
         },
       })),
       objectIdField: "oid",
       fields: [
         { name: "oid", type: "oid" },
-        ...["id", "name", "sector", "sectorLabel", "kindLabel", "detail"].map((name) => ({ name, type: "string" })),
+        ...["id", "name", "sector", "sectorLabel", "kindLabel"].map((name) => ({ name, type: "string" })),
       ],
       geometryType: "point",
       spatialReference: { wkid: 4326 },
       outFields: ["*"],
-      popupTemplate: ASSET_POPUP,
+      popupTemplate: assetPopup(details),
       featureReduction: clusterRef.current ? CLUSTER : null,
       renderer: {
         type: "unique-value",
@@ -235,9 +242,9 @@ const CascadeMap = forwardRef(function CascadeMap(
     search.sources.add(assetSource, 0);
 
     const c = graph.meta?.center;
-    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100+.
+    // Open on the whole study area: zoom 10 for ~30 miles, 9 for ~60, 8 for ~100, 7 for whole states.
     const radius = graph.meta?.radiusMi ?? 30;
-    const zoom = radius > 80 ? 8 : radius > 45 ? 9 : 10;
+    const zoom = radius > 200 ? 7 : radius > 80 ? 8 : radius > 45 ? 9 : 10;
     if (c) view.goTo({ center: [c.lon, c.lat], zoom }, { animate: false }).catch(() => {});
 
     return () => {
@@ -329,12 +336,11 @@ const CascadeMap = forwardRef(function CascadeMap(
       graphics.push(new Graphic({
         geometry: { type: "point", longitude: n.lon, latitude: n.lat },
         attributes: {
-          name: i.name, hop: i.hop, cause: i.cause,
+          id: i.id, name: i.name, hop: i.hop, cause: i.cause,
           statusLabel: STATUS[i.status].label,
           kindLabel: kindLabel(i.kind), sectorLabel: sectorLabel(i.sector),
-          detail: esri.current.details?.get(i.id) ?? "",
         },
-        popupTemplate: IMPACT_POPUP,
+        popupTemplate: impactPopup(esri.current.details ?? { get: () => "" }),
         symbol: {
           type: "simple-marker",
           size: (i.hop === 0 ? 13 : 10) + (isSelected ? 5 : 0),

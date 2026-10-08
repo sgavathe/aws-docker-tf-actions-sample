@@ -176,6 +176,10 @@ def main(path):
         o.node(dx, dy, {"power": "substation", "substation": "distribution", "voltage": "34500",
                         "name": f"Sample Distribution Substation {n + 1}"})
 
+    # A state boundary covering the western half, for --states tests (60 km square at x -45..15).
+    o.polygon(-15, 0, 60, {"boundary": "administrative", "admin_level": "4", "name": "Sample State",
+                           "type": "boundary"})
+
     # ---------- Water ----------
     o.polygon(-6, 4, 0.5, {"man_made": "water_works", "name": "Sample City Water Treatment Plant"})
     o.polygon(14, -14, 0.5, {"man_made": "water_works", "name": "Sample County Water Treatment Plant"})

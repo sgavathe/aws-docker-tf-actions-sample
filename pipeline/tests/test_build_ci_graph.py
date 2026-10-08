@@ -176,3 +176,38 @@ def test_sewer_stations_are_classified_by_name_when_untagged():
     assert c({"man_made": "pumping_station", "name": "Northside Booster Pump Station"}) == ("water", "pumping_station")
     assert c({"man_made": "pumping_station"}) == ("water", "pumping_station")
     assert c({"man_made": "pumping_station", "substance": "gas"}) is None
+
+
+def test_nodes_carry_their_osm_tags(graph):
+    sub = by_name(graph)["Sample Downtown Substation"]
+    assert sub["tags"]["power"] == "substation"
+    assert sub["tags"]["voltage"] == "230000;115000"
+    assert not any(k.startswith(("source", "note", "fixme", "name:")) for n in graph["nodes"]
+                   for k in n.get("tags", {}))
+
+
+def test_clean_tags_drops_editing_noise():
+    t = build_ci_graph.clean_tags({"name": "X", "name:es": "Y", "operator": "Dominion Energy",
+                                   "source": "survey", "fixme": "check", "tiger:cfcc": "A41",
+                                   "description": "z" * 300})
+    assert set(t) == {"name", "operator", "description"}
+    assert len(t["description"]) == build_ci_graph.MAX_TAG_VALUE + 3
+
+
+def test_states_area_limits_assets_to_the_boundary(tmp_path):
+    osm = tmp_path / "sample.osm"
+    make_sample_osm.main(str(osm))
+    g = build_ci_graph.build([str(osm)], None, None, "Sample State", states=["Sample State"])
+    assert g["meta"]["area"] == {"type": "states", "names": ["Sample State"]}
+    names = set(by_name(g))
+    assert "Sample Millwood Substation" in names           # x = -25 km, inside
+    assert "Sample Cold Harbor Substation" not in names    # x = +22 km, outside
+    assert g["meta"]["radiusMi"] > 0
+    assert len(g["nodes"]) < 93
+
+
+def test_unknown_state_name_fails_loudly(tmp_path):
+    osm = tmp_path / "sample.osm"
+    make_sample_osm.main(str(osm))
+    with pytest.raises(SystemExit, match="Atlantis"):
+        build_ci_graph.build([str(osm)], None, None, "x", states=["Atlantis"])

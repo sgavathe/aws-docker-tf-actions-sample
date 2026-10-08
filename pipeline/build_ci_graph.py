@@ -6,6 +6,11 @@ Build an inferred critical-infrastructure dependency graph from OpenStreetMap da
         --center 37.5407,-77.4360 --radius-mi 70 --region "Richmond, VA" \
         -o build/ci-graph.json
 
+    # whole states instead of a circle (boundaries come from the extracts themselves)
+    python pipeline/build_ci_graph.py virginia-latest.osm.pbf maryland-latest.osm.pbf \
+        district-of-columbia-latest.osm.pbf --states "Virginia,Maryland,District of Columbia" \
+        --region "Virginia, Maryland and DC" -o build/ci-graph.json
+
 Input:  one or more .osm.pbf / .osm files (e.g. Geofabrik state extracts).
 Output: one compact JSON file (nodes + edges) read by the backend's
         /api/infrastructure endpoints and drawn by the frontend.
@@ -41,6 +46,7 @@ import numpy as np
 import osmium
 from pyproj import CRS, Transformer
 import shapely
+import shapely.prepared
 from shapely import STRtree
 from shapely.geometry import LineString, Point, shape
 
@@ -233,7 +239,50 @@ def label(a: Asset) -> str:
 # 1. Read OSM
 # --------------------------------------------------------------------------------------
 
-def read_osm(paths: list[str], fwd: Transformer, core_m: Point, core_radius_m: float, lonlat_bbox):
+# OSM tags carried into the output for popups. Everything is kept except editing metadata,
+# import bookkeeping and translated names, which are noise in a popup and bulk up the file.
+DROP_TAG_PREFIXES = ("source", "note", "fixme", "FIXME", "created_by", "tiger:", "gnis:", "nhd:",
+                     "check_date", "survey", "attribution", "import", "name:", "alt_name:", "old_name:",
+                     "official_name:", "short_name:", "is_in", "mapillary", "lastcheck", "last_check")
+MAX_TAG_VALUE = 200
+
+
+def clean_tags(tags: dict) -> dict:
+    return {k: (v if len(v) <= MAX_TAG_VALUE else v[:MAX_TAG_VALUE] + "...")
+            for k, v in sorted(tags.items())
+            if not k.startswith(DROP_TAG_PREFIXES)}
+
+
+def read_boundaries(paths: list[str], names: list[str]):
+    """Union of the state boundaries (admin_level=4) with these names, in lon/lat.
+
+    The boundary relations ship inside every Geofabrik state extract, so no extra download.
+    """
+    wanted = {n.strip().lower(): n.strip() for n in names if n.strip()}
+    found: dict[str, object] = {}
+    gj = osmium.geom.GeoJSONFactory()
+    flt = osmium.filter.TagFilter(("boundary", "administrative"))
+    for path in paths:
+        if len(found) == len(wanted):
+            break                                   # every state found; skip the other extracts
+        fp = (osmium.FileProcessor(path).with_locations().with_areas(flt)
+              .with_filter(osmium.filter.EntityFilter(osmium.osm.AREA)))
+        for obj in fp:
+            name = (obj.tags.get("name") or "").strip().lower()
+            if obj.tags.get("admin_level") != "4" or name not in wanted or name in found:
+                continue
+            try:
+                found[name] = shape(json.loads(gj.create_multipolygon(obj)))
+            except (osmium.InvalidLocationError, RuntimeError, ValueError):
+                continue
+    missing = [wanted[k] for k in wanted if k not in found]
+    if missing:
+        raise SystemExit(f"State boundary not found in the inputs: {', '.join(missing)}. "
+                         "Include that state's extract and check the spelling (OSM name, e.g. 'District of Columbia').")
+    return shapely.union_all(list(found.values())), [wanted[k] for k in wanted]
+
+
+def read_osm(paths: list[str], fwd: Transformer, core, lonlat_bbox):
     """Return (assets, lines). Lines = [(osm_id, voltage_kv, LineString in metres)]."""
 
     def to_metres(g):
@@ -242,7 +291,7 @@ def read_osm(paths: list[str], fwd: Transformer, core_m: Point, core_radius_m: f
     tag_filter = osmium.filter.TagFilter(*WANTED_TAGS)
     gj = osmium.geom.GeoJSONFactory()
     w, s, e, n = lonlat_bbox
-    core = core_m.buffer(core_radius_m)
+    core = shapely.prepared.prep(core)
     assets: list[Asset] = []
     lines: list[tuple[str, float, LineString]] = []
     seen_lines: set[str] = set()
@@ -275,7 +324,7 @@ def read_osm(paths: list[str], fwd: Transformer, core_m: Point, core_radius_m: f
                     if lon1 < w or lon0 > e or lat1 < s or lat0 > n:
                         continue
                     gm = to_metres(geom)
-                    if not gm.intersects(core):
+                    if not core.intersects(gm):
                         continue
                     seen_lines.add(osm_id)
                     lines.append((osm_id, max_voltage_kv(tags), gm))
@@ -345,6 +394,7 @@ def build_grid(assets: list[Asset], lines, core: object, to_ll, min_source_mw: f
     terminals = [a for a in assets if a.kind in ("plant", "substation")]
     if not terminals or not lines:
         return []
+    core = shapely.prepared.prep(core)       # a state outline has thousands of vertices
     tree = STRtree([t.geom for t in terminals])
 
     def snap(pt: Point, tol: float) -> Asset | None:
@@ -578,25 +628,38 @@ def utm_for(lat: float, lon: float) -> CRS:
     return CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
 
 
-def build(paths: list[str], center: tuple[float, float], radius_mi: float, region: str,
-          min_source_mw: float = MIN_SOURCE_MW, min_tie_kv: float = MIN_TIE_KV) -> dict:
-    lat0, lon0 = center
+def build(paths: list[str], center: tuple[float, float] | None, radius_mi: float | None, region: str,
+          min_source_mw: float = MIN_SOURCE_MW, min_tie_kv: float = MIN_TIE_KV,
+          states: list[str] | None = None) -> dict:
+    """Study area = a circle (center + radius) or the union of named state boundaries."""
+    area_ll, state_names = (read_boundaries(paths, states) if states else (None, None))
+    if area_ll is not None:
+        c = area_ll.centroid
+        lat0, lon0 = c.y, c.x
+    else:
+        lat0, lon0 = center
     utm = utm_for(lat0, lon0)
     fwd = Transformer.from_crs("EPSG:4326", utm, always_xy=True)
     inv = Transformer.from_crs(utm, "EPSG:4326", always_xy=True)
     to_m = fwd.transform
     to_ll = inv.transform
 
-    radius_m = radius_mi * MI_TO_M
-    cx, cy = to_m(lon0, lat0)
-    core_center = Point(cx, cy)
-    core = core_center.buffer(radius_m)
-    pad = radius_m * 1.3
-    xs, ys = [cx - pad, cx + pad], [cy - pad, cy + pad]
-    lons, lats = zip(*(to_ll(x, y) for x in xs for y in ys))
-    bbox = (min(lons), min(lats), max(lons), max(lats))
+    if area_ll is not None:
+        core = shapely.transform(area_ll, lambda xy: _xy(fwd, xy))
+        bbox = area_ll.bounds
+        cx, cy = to_m(lon0, lat0)
+        # radius of a circle that covers the area; the app uses it to pick the opening zoom
+        radius_mi = round(shapely.hausdorff_distance(Point(cx, cy), core.boundary) / MI_TO_M)
+    else:
+        radius_m = radius_mi * MI_TO_M
+        cx, cy = to_m(lon0, lat0)
+        core = Point(cx, cy).buffer(radius_m)
+        pad = radius_m * 1.3
+        xs, ys = [cx - pad, cx + pad], [cy - pad, cy + pad]
+        lons, lats = zip(*(to_ll(x, y) for x in xs for y in ys))
+        bbox = (min(lons), min(lats), max(lons), max(lats))
 
-    assets, lines = read_osm(paths, fwd, core_center, radius_m, bbox)
+    assets, lines = read_osm(paths, fwd, core, bbox)
     grid_edges = build_grid(assets, lines, core, to_ll, min_source_mw, min_tie_kv)
     dep_edges = build_dependencies(assets)
 
@@ -622,6 +685,9 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
             node["source"] = a.source
         if a.kind in BACKUP:
             node["backup"] = BACKUP[a.kind]
+        tags = clean_tags(a.tags)
+        if tags:
+            node["tags"] = tags
         nodes.append(node)
 
     edges = []
@@ -644,8 +710,10 @@ def build(paths: list[str], center: tuple[float, float], radius_mi: float, regio
     return {
         "meta": {
             "region": region,
-            "center": {"lat": lat0, "lon": lon0},
+            "center": {"lat": round(lat0, 5), "lon": round(lon0, 5)},
             "radiusMi": radius_mi,
+            "area": {"type": "states", "names": state_names} if state_names else
+                    {"type": "circle", "radiusMi": radius_mi},
             "generatedUtc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "inputs": [Path(p).name for p in paths],
             "source": "OpenStreetMap",
@@ -672,6 +740,8 @@ def main(argv=None) -> int:
     ap.add_argument("--center", default="37.5407,-77.4360", help="lat,lon (default: Richmond, VA)")
     ap.add_argument("--radius-mi", type=float, default=70)
     ap.add_argument("--region", default="Richmond, VA")
+    ap.add_argument("--states", help='study area = these state boundaries instead of a circle, '
+                                     'comma-separated OSM names, e.g. "Virginia,Maryland,District of Columbia"')
     ap.add_argument("--min-source-mw", type=float, default=MIN_SOURCE_MW,
                     help="smallest plant that counts as a power source (default %(default)s MW)")
     ap.add_argument("--min-tie-kv", type=float, default=MIN_TIE_KV,
@@ -681,7 +751,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     lat, lon = (float(v) for v in args.center.split(","))
-    graph = build(args.inputs, (lat, lon), args.radius_mi, args.region, args.min_source_mw, args.min_tie_kv)
+    states = args.states.split(",") if args.states else None
+    graph = build(args.inputs, (lat, lon), args.radius_mi, args.region, args.min_source_mw, args.min_tie_kv,
+                  states=states)
     if args.sample:
         graph["meta"].update(sample=True, source="Synthetic sample (not real infrastructure)",
                              attribution="Synthetic demo data", license="CC0")
@@ -694,7 +766,7 @@ def main(argv=None) -> int:
           f"{m['edgeCount']} edges, {m['wireSegments']} wire segments, "
           f"{out.stat().st_size / 1024:.0f} KiB", file=sys.stderr)
     if not graph["nodes"]:
-        print("No infrastructure found - check --center/--radius-mi against the input extract.",
+        print("No infrastructure found - check --center/--radius-mi or --states against the input extract.",
               file=sys.stderr)
         return 1
     return 0

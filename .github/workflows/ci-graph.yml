@@ -17,7 +17,10 @@ on:
     inputs:
       extracts:
         description: "Geofabrik extract paths, space-separated (download.geofabrik.de/<path>-latest.osm.pbf)"
-        default: "north-america/us/virginia"
+        default: "north-america/us/virginia north-america/us/maryland north-america/us/district-of-columbia"
+      states:
+        description: "Study area = these state boundaries (comma-separated OSM names). Empty = use center + radius"
+        default: "Virginia,Maryland,District of Columbia"
       center:
         description: "Study area center, lat,lon"
         default: "37.5407,-77.4360"
@@ -26,7 +29,7 @@ on:
         default: "70"
       region:
         description: "Name shown in the app"
-        default: "Richmond, VA"
+        default: "Virginia, Maryland and DC"
       publish:
         description: "Publish to the serverless site bucket"
         type: boolean
@@ -41,12 +44,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # 100 miles around Richmond needs: north-america/us/virginia north-america/us/north-carolina
-  #                                  north-america/us/maryland north-america/us/district-of-columbia
-  EXTRACTS: ${{ inputs.extracts || 'north-america/us/virginia' }}
+  # Defaults (also used by the weekly run): whole states of Virginia, Maryland and DC.
+  # For a circle instead, run manually with states empty plus center and radius_mi.
+  EXTRACTS: ${{ inputs.extracts || 'north-america/us/virginia north-america/us/maryland north-america/us/district-of-columbia' }}
+  STATES: ${{ github.event_name == 'workflow_dispatch' && inputs.states || (github.event_name != 'workflow_dispatch' && 'Virginia,Maryland,District of Columbia') || '' }}
   CENTER: ${{ inputs.center || '37.5407,-77.4360' }}
   RADIUS_MI: ${{ inputs.radius_mi || '70' }}
-  REGION: ${{ inputs.region || 'Richmond, VA' }}
+  REGION: ${{ inputs.region || 'Virginia, Maryland and DC' }}
   PROJECT_NAME: geo-devops-demo
   AWS_REGION: us-east-1
 
@@ -55,9 +59,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
@@ -101,8 +105,12 @@ jobs:
           inputs=""
           for extract in $EXTRACTS; do inputs="$inputs osm/$(basename "$extract")-latest.osm.pbf"; done
           # shellcheck disable=SC2086
-          python pipeline/build_ci_graph.py $inputs \
-            --center "$CENTER" --radius-mi "$RADIUS_MI" --region "$REGION" \
+          if [ -n "$STATES" ]; then
+            area=(--states "$STATES")
+          else
+            area=(--center "$CENTER" --radius-mi "$RADIUS_MI")
+          fi
+          python pipeline/build_ci_graph.py $inputs "${area[@]}" --region "$REGION" \
             -o build/ci-graph.json
 
       - name: Summary

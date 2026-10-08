@@ -76,3 +76,18 @@ python pipeline/graph_report.py build/ci-graph.json --csv build/gaps.csv
 Reports isolated assets, grid groups cut off from the rest, energy assets with no path to a power
 source, consumers missing a service, and links with unknown flow direction. The CSV lists each one with
 its OpenStreetMap link. Keep it in `build/` (git-ignored): it is built from real data.
+
+## Whole states instead of a circle
+
+`--states` takes the study area from the state boundaries inside the extracts (OSM
+`boundary=administrative`, `admin_level=4`), so no extra download is needed:
+
+```bash
+python pipeline/build_ci_graph.py virginia-latest.osm.pbf maryland-latest.osm.pbf \
+  district-of-columbia-latest.osm.pbf \
+  --states "Virginia,Maryland,District of Columbia" --region "Virginia, Maryland and DC" \
+  -o build/ci-graph.json
+```
+
+Names must match OSM's `name` tag. Each node also carries its OSM tags (`tags`), minus editing
+metadata such as `source`, `note`, `fixme`, `tiger:*` and translated names; the map popup lists them.

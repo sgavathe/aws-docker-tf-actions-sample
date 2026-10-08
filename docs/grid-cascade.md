@@ -105,8 +105,10 @@ from utility records.
 
 How the pipeline builds the graph:
 
-1. **Read** the extracts with pyosmium, keeping those tags inside the study circle; assets duplicated across
-   neighbouring extracts are counted once.
+1. **Read** the extracts with pyosmium, keeping those tags inside the study area: a circle
+   (`--center`, `--radius-mi`) or whole states (`--states "Virginia,Maryland,District of Columbia"`, using the
+   boundaries inside the extracts). Assets duplicated across neighbouring extracts are counted once, and each
+   keeps its OSM tags for the popup.
 2. **Project** to the local UTM zone so distances are in metres.
 3. **Wire the grid.** A wire ending within 60 m of a substation or plant, or passing within 10 m, connects to
    it. Walking the wires from each substation finds the next one; each pair becomes a link along the real route.
