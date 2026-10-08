@@ -3,7 +3,34 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Grid Cascade</title>
+    <title>Grid Cascade: see how infrastructure failures cascade | SpatialEnable</title>
+    <meta name="description" content="Draw an area on the map and see which power, water, communications and emergency assets fail next, and how far the failure travels. Built on OpenStreetMap data." />
+    <link rel="canonical" href="https://map.spatialenable.com/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f2a44" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="SpatialEnable" />
+    <meta property="og:title" content="Grid Cascade: see how infrastructure failures cascade" />
+    <meta property="og:description" content="Draw an area and watch power, water and communications failures spread across a dependency graph built from OpenStreetMap." />
+    <meta property="og:url" content="https://map.spatialenable.com/" />
+    <meta name="twitter:card" content="summary" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Grid Cascade",
+        "url": "https://map.spatialenable.com/",
+        "applicationCategory": "ReferenceApplication",
+        "operatingSystem": "Any (web browser)",
+        "description": "Interactive map that shows how a failure inside a drawn area cascades across power, water, communications and emergency services.",
+        "isAccessibleForFree": true,
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "publisher": { "@type": "Organization", "name": "SpatialEnable", "url": "https://spatialenable.com" },
+        "sameAs": ["https://github.com/sgavathe/aws-docker-tf-actions-sample"]
+      }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,6 +43,14 @@
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <h1>Grid Cascade</h1>
+      <p>Grid Cascade is an interactive map: draw an area and see which power, water, communications and
+        emergency assets fail next, and how far the failure travels. It needs JavaScript.</p>
+      <p><a href="/docs/index.html">Overview</a> &middot; <a href="/docs/grid-cascade.html">How it works</a> &middot;
+        <a href="/docs/hosting.html">Hosting on AWS</a> &middot; <a href="/docs/security.html">Security checks</a> &middot;
+        <a href="https://github.com/sgavathe/aws-docker-tf-actions-sample">Source on GitHub</a></p>
+    </noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

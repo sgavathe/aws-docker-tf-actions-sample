@@ -12,6 +12,7 @@ export default function ViewNav({ current }) {
           {v.label}
         </a>
       ))}
+      <a href="/docs/grid-cascade.html">How it works</a>
     </nav>
   );
 }

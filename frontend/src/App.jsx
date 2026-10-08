@@ -26,7 +26,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const abortRef = useRef(null);
 
-  useEffect(() => { document.title = "Harbor Watch"; }, []);
+  useEffect(() => { document.title = "Harbor Watch: harbor incidents, hotspots and weather | SpatialEnable"; }, []);
 
   const track = (res) => {
     if (res?.requestId) setRequestId(res.requestId);
