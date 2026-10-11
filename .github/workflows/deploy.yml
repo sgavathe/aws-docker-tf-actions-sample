@@ -43,8 +43,8 @@ jobs:
 
       - name: Terraform plan
         run: |
-          BE=$(aws ecs describe-task-definition --task-definition $PROJECT_NAME-backend  --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
-          FE=$(aws ecs describe-task-definition --task-definition $PROJECT_NAME-frontend --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
+          BE=$(aws ecs describe-task-definition --task-definition "$PROJECT_NAME-backend"  --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
+          FE=$(aws ecs describe-task-definition --task-definition "$PROJECT_NAME-frontend" --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null || echo "")
           terraform plan -input=false -out=tfplan -var="backend_image=$BE" -var="frontend_image=$FE"
           terraform show -json tfplan > tfplan.json
 

@@ -43,3 +43,5 @@ skip-check:
   - CKV_AWS_21    # S3 versioning on the site bucket (deploy role needs s3:PutBucketVersioning first)
   - CKV2_AWS_61   # S3 lifecycle rule (pair with versioning to expire old versions)
   - CKV_AWS_355   # ECS deploy role: some statements use Resource "*" (scope them to the project's ARNs)
+  # --- Not applicable to this design
+  - CKV_AWS_356   # Resource "*" in the Prowler audit role: read-only, must read every resource in the account

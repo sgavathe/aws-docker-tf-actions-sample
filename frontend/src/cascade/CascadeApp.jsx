@@ -4,6 +4,7 @@ import ViewNav from "../ViewNav.jsx";
 import CascadeGraph from "./CascadeGraph.jsx";
 import CascadeMap from "./CascadeMap.jsx";
 import HazardsPanel from "./HazardsPanel.jsx";
+import { hazardArea } from "./hazards.js";
 import { LINK_TYPES, STATUS, kindLabel, sectorColor, sectorLabel } from "./sectors.js";
 import "./cascade.css";
 
@@ -107,6 +108,17 @@ export default function CascadeApp() {
       if (!controller.signal.aborted) setBusy(false);
     }
   }, []);
+
+  // A hazard shape clicked on the map: same as its "Run cascade" button in the list.
+  const runHazard = useCallback(async (h) => {
+    setDrawingTool(null);
+    try {
+      const geo = await hazardArea(h);
+      runImpact(geo, { label: `${h.event}${h.areaDesc ? `: ${h.areaDesc}` : ""}`, fit: true });
+    } catch (e) {
+      setError(`${h.event}: ${e.message}`);
+    }
+  }, [runImpact]);
 
   const example = useCallback(() => {
     const c = graph?.meta?.center;
@@ -262,8 +274,9 @@ export default function CascadeApp() {
 
         <section className="block" aria-live="polite" aria-labelledby="impact-h">
           <h2 id="impact-h">{busy ? "Tracing the cascade…" : s ? "Impact" : "No area yet"}</h2>
-          {!s && !busy && <p className="muted">Pick a drawing tool, run the example, or run a live hazard.</p>}
+          {!s && !busy && <p className="muted">Pick a drawing tool, run the example, or run a live hazard (its button, or click its shape on the map).</p>}
           {areaLabel && <p className="area-label">Area: {areaLabel}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           {s && (
             <>
               <dl className="kpis">
@@ -345,7 +358,6 @@ export default function CascadeApp() {
           </section>
         )}
 
-        {error && <p className="error" role="alert">{error}</p>}
 
         <footer className="foot">
           <a href={`${api.baseUrl}/api/swagger`} target="_blank" rel="noreferrer">API documentation</a>
@@ -367,6 +379,7 @@ export default function CascadeApp() {
             cluster={cluster}
             onArea={(geo) => { setDrawingTool(null); runImpact(geo); }}
             onDrawingChange={(on) => { if (!on) setDrawingTool(null); }}
+            onHazardClick={runHazard}
           />
           {!graph && !error && <p className="map-note">Loading the infrastructure network…</p>}
         </div>

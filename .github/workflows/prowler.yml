@@ -1,0 +1,76 @@
+name: Prowler AWS Scan
+
+# Weekly security scan of the AWS account, plus a manual "Run workflow" button.
+# Read-only: assumes the ProwlerReadOnly role through GitHub OIDC (no stored keys).
+#
+# Results:
+#   - Run summary page: per-severity counts of failing checks
+#   - Artifact "prowler-aws": HTML report (open in a browser), CSV, OCSF JSON
+#   - Security -> Code scanning: findings from the SARIF upload
+#
+# Setup (once):
+#   1. terraform -chdir=infra/prowler-role init && terraform -chdir=infra/prowler-role apply
+#   2. Repo Settings -> Secrets and variables -> Actions -> Variables:
+#        PROWLER_ROLE_ARN = <the prowler_role_arn output>
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays 06:17 UTC (02:17 ET)
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: "Severities to report (space-separated)"
+        required: false
+        default: "critical high medium low"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prowler-aws
+  cancel-in-progress: false
+
+jobs:
+  prowler:
+    name: Prowler AWS scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      id-token: write  # OIDC token for AWS
+      contents: read
+      security-events: write  # SARIF upload to Code scanning
+      actions: read
+    env:
+      AWS_REGION: us-east-1
+      SEVERITY: ${{ github.event.inputs.severity || 'critical high medium low' }}
+    steps:
+      - name: Check role variable is set
+        env:
+          ROLE_ARN: ${{ vars.PROWLER_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Repo variable PROWLER_ROLE_ARN is not set. Apply infra/prowler-role and add the output as a repo variable."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, read-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PROWLER_ROLE_ARN }}
+          role-session-name: prowler-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Prowler Security Scan
+        uses: prowler-cloud/prowler@5.44.0
+        with:
+          provider: aws
+          image-tag: "5.44.0"
+          output-formats: html csv json-ocsf sarif
+          upload-sarif: true
+          sarif-category: prowler-aws
+          # The site lives in us-east-1; IAM and other global services are
+          # always scanned. Drop --region to scan every enabled region.
+          flags: --region ${{ env.AWS_REGION }} --severity ${{ env.SEVERITY }}
+          extra-env: AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION AWS_REGION

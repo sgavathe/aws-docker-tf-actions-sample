@@ -141,6 +141,8 @@
 .basemap-switch button:hover { color: var(--signal); }
 .basemap-switch button[aria-pressed="true"] { background: var(--harbor-2); color: var(--signal); }
 .basemap-switch button:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.basemap-switch .switch-group { display: flex; gap: 2px; }
+.basemap-switch .switch-sep { width: 1px; margin: 3px 2px; background: rgba(255, 255, 255, 0.18); }
 .map-note {
   position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
   margin: 0; padding: 8px 14px;
@@ -209,6 +211,49 @@
 .hz-advisory { background: #8a7a17; }
 .hz-statement { background: #4f5b68; }
 .hz-cone { background: #6a3fb0; }
+/* Colour = hazard type (--cat, set per row/chip from hazards.js CATEGORIES); style = level. */
+.hazard-list li { border-left: 3px solid var(--cat, transparent); padding-left: 6px; }
+.hz-tag.lvl-warning, .hz-tag.lvl-cone { background: var(--cat); }
+.hz-tag.lvl-watch { background: color-mix(in srgb, var(--cat) 35%, transparent); box-shadow: inset 0 0 0 1.5px var(--cat); }
+.hz-tag.lvl-advisory, .hz-tag.lvl-statement {
+  background: color-mix(in srgb, var(--cat) 18%, transparent); box-shadow: inset 0 0 0 1px var(--cat); color: #e8edf2;
+}
+.hz-emergency { background: #6d0036 !important; box-shadow: 0 0 0 2px #ff5aa5; }
+.hazard-list li.is-tornado { background: rgba(180, 0, 90, 0.14); }
+.hazard-list li.is-demo { border-left-style: dashed; }
+.hz-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 4px; }
+.hz-chip {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 999px; background: transparent;
+  color: var(--mist); font: 600 12px/1 var(--font-display); padding: 5px 9px;
+}
+.hz-chip:hover { color: var(--signal); }
+.hz-chip[aria-pressed="true"] { background: var(--harbor-2); color: var(--signal); border-color: var(--cat, var(--signal)); }
+.hz-swatch { width: 9px; height: 9px; border-radius: 50%; background: var(--cat); }
+.hz-count { font-weight: 400; opacity: 0.75; }
+.hazard-legend {
+  position: absolute; left: 12px; bottom: 28px; z-index: 2; max-width: 46%;
+  display: flex; gap: 12px; padding: 7px 9px; border-radius: 6px;
+  background: color-mix(in srgb, var(--harbor) 88%, transparent); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  color: var(--mist); font-size: 11px; pointer-events: none;
+}
+.hazard-legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.hazard-legend li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.lg-cat { width: 10px; height: 10px; border-radius: 2px; }
+.lg-level { width: 18px; height: 0; border-top: 2px solid var(--mist); }
+.lg-level.lg-dash { border-top-style: dashed; }
+.lg-level.lg-dot { border-top-style: dotted; }
+.hz-storm { font-size: 12px; color: #ffc2dc; line-height: 1.3; }
+.hz-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.hz-project { font-weight: 500; }
+.hz-alert {
+  margin: 6px 0; padding: 6px 8px; border-radius: 4px;
+  background: rgba(180, 0, 90, 0.22); color: #ffd6e8; font-size: 13px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hz-tornado { animation: hz-pulse 2s ease-in-out infinite; }
+  @keyframes hz-pulse { 50% { filter: brightness(1.35); } }
+}
 .hz-main { display: flex; flex-direction: column; min-width: 0; }
 .hz-title { font-weight: 600; font-size: 14px; line-height: 1.25; }
 .hz-sub { font-size: 12px; color: var(--mist); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

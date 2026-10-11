@@ -35,6 +35,12 @@ ENV HOME=/tmp \
     PORT=8080 \
     AWS_LWA_PORT=8080 \
     AWS_LWA_READINESS_CHECK_PATH=/health
+    
+# Run as the non-root "app" user that ships with the .NET 8 images (UID 1654).
+# Lambda ignores this and uses its own non-root sandbox user, but it keeps local
+# `docker run` from running as root and satisfies image scanners.
+# No HEALTHCHECK: Lambda ignores it; the adapter's readiness check replaces it.
+USER $APP_UID
 
 # No USER / HEALTHCHECK here: Lambda always runs as its own non-root sandbox
 # user and ignores Docker health checks (the adapter's readiness check replaces it).
