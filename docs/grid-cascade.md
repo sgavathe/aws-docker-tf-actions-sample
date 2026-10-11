@@ -43,13 +43,65 @@ Instead of drawing, you can run the cascade on a live hazard. The **Live hazards
 - **Hurricane forecast cones** from the National Hurricane Center, through Esri Living Atlas
   ("Active Hurricanes", layer 4). Only storms whose cone reaches the study area are listed.
 
-**Run cascade** turns the hazard's outline into the area (simplified to under 3,000 vertices) and zooms to it.
+**Run cascade** (or clicking the hazard's shape on the map) turns the hazard's outline into the area (simplified to about 600 corners, so a county-based watch runs as fast as a hand-drawn shape) and zooms to it.
 Outlines that come with the feed are drawn on the map: warnings red, watches amber, advisories yellow,
 cones purple and dashed. Each storm also gets its track, NHC style: the past track dashed grey, the forecast
 track solid, and a circle at each forecast position lettered by stage (D depression, S tropical storm,
 H hurricane, M major hurricane) with its time; click a circle for winds and pressure. **Show hazard outlines on
 map** turns all of these off and on (the list stays); the choice is remembered in the browser. The list refreshes every 5 minutes. Everything is fetched by the browser from the
 public feeds, so it adds no AWS cost.
+
+### By region, colour-coded by type
+
+Hazards follow the **Region** picker: DMV / Mid-Atlantic pulls alerts for VA, MD and DC, Florida for FL, Texas
+for TX, and hurricane cones are kept when they reach that region's area. Switching region reloads the list.
+
+Every alert is sorted into a hazard type, and the type sets its colour in the list, the filter chips and on the
+map; the level sets the line style:
+
+| Type | Colour | Examples |
+| --- | --- | --- |
+| Tornado | magenta | tornado warning, tornado watch |
+| Hurricane & tropical | purple | NHC forecast cone, hurricane / tropical storm warning, storm surge |
+| Severe storms | orange | severe thunderstorm warning and watch, special weather statement |
+| Coastal & marine | teal | coastal flood, rip current, small craft, gale |
+| Flood | green | flood and flash flood warnings, watches, advisories |
+| Winter & cold | blue | winter storm, ice storm, freeze, wind chill |
+| Heat, fire & air | red | heat advisory, red flag warning, air quality |
+| Other | grey | anything else |
+
+Warnings are solid lines, watches dashed, advisories and statements dotted, cones dashed; tornado warnings are
+thicker and drawn on top. Chips above the list (*All · Tornado 2 · Flood 3 …*) filter both the list and the map,
+and a key in the map's bottom-left corner shows the types and line styles currently drawn.
+
+Tornado and severe-thunderstorm **watches** (and zone-based hurricane and tropical alerts) come from NWS as a list
+of counties or forecast zones with no polygon. Their outlines are fetched in the background after the list loads
+(at most 200 zones per refresh, cached for the session) so they appear on the map like the polygon warnings.
+
+### Tornado warnings
+
+Tornado warnings get extra treatment, because they are the fastest-moving hazard the list carries:
+
+- **First in the list**, with a pulsing **Tornado** tag (**Tornado emergency** when NWS sets a catastrophic
+  damage threat), followed by tornado watches.
+- **What NWS says about the storm**, from the alert's parameters: how the tornado was detected (radar indicated
+  or observed), storm motion (`eventMotionDescription`, e.g. `240DEG...35KT`: moving *from* 240°, so toward
+  the northeast, at 40 mph), damage threat and hail size.
+- **A motion arrow** on the map from the storm's position to where it would be in 30 minutes at that speed,
+  and a thicker magenta outline drawn above other warnings.
+- **+30 min path**: runs the cascade on the warning polygon swept 30 minutes further along the storm's
+  motion (the convex hull of the polygon and a copy moved downstream). It's an estimate for "what's in the
+  way next", not an NWS product; the button's tooltip says so. Severe thunderstorm warnings carry motion too
+  and get the same button.
+- **Faster refresh**: while a tornado warning is active, the list checks every minute instead of every five.
+
+**Try a demo tornado warning** adds a made-up warning near the middle of the region (dashed outline, labelled
+*demo*, moving east-northeast at 40 mph), so the feature can be tried when no real tornado warnings are active. It
+lives only in the page and is never sent anywhere except as the area of a cascade run.
+
+**Radar** (top right of the map, next to Map / Satellite) overlays the NWS national radar mosaic (base
+reflectivity) from NOAA's `radar_base_reflectivity` map service, refreshed every 5 minutes. It loads only when
+turned on, and the choice is remembered in the browser.
 
 ## What happens after you draw
 

@@ -1,6 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { LINK_TYPES, SECTORS, STATUS, kindLabel, rgba, sectorColor, sectorLabel } from "./sectors.js";
 import { describeAssets, esc } from "./assetDetails.js";
+import { categoryCounts, categoryOf, motionLine } from "./hazards.js";
+
+// NOAA/NWS national radar mosaic (base reflectivity), an ArcGIS map service, no key.
+const RADAR_URL = "https://mapservices.weather.noaa.gov/eventdriven/rest/services/radar/radar_base_reflectivity/MapServer";
+const MOTION_MIN = 30;   // length of the storm-motion arrow, in minutes of travel
 
 // Popup bodies are built when a feature is clicked (details.get), not for every asset upfront.
 const assetPopup = (details) => ({
@@ -40,12 +45,14 @@ const DRAW_SYMBOL = {
  * Parent drives drawing through the ref: draw("polygon" | "rectangle" | "freehandPolygon"), cancel().
  */
 const CascadeMap = forwardRef(function CascadeMap(
-  { graph, area, impact, hazards = [], fitArea = false, selected, focus, cluster = true, onArea, onDrawingChange },
+  { graph, area, impact, hazards = [], fitArea = false, selected, focus, cluster = true, onArea, onDrawingChange, onHazardClick },
   ref
 ) {
   const containerRef = useRef(null);
   const esri = useRef(null);
   const onAreaRef = useRef(onArea);
+  const onHazardClickRef = useRef(onHazardClick);
+  const hazardsById = useRef(new Map());   // hazard id -> hazard, for map clicks
   const onDrawingRef = useRef(onDrawingChange);
   const clusterRef = useRef(cluster);
   const [ready, setReady] = useState(false);
@@ -54,8 +61,13 @@ const CascadeMap = forwardRef(function CascadeMap(
   });
   const basemapRef = useRef(basemap);
   basemapRef.current = basemap;
+  const [radar, setRadar] = useState(() => {
+    try { return localStorage.getItem("cascade.radar") === "on"; } catch { return false; }
+  });
+  const [radarError, setRadarError] = useState("");
 
   onAreaRef.current = onArea;
+  onHazardClickRef.current = onHazardClick;
   onDrawingRef.current = onDrawingChange;
 
   useImperativeHandle(ref, () => ({
@@ -158,6 +170,18 @@ const CascadeMap = forwardRef(function CascadeMap(
         const geo = webMercatorUtils.webMercatorToGeographic(event.graphic.geometry);
         const rings = geo.rings.map((ring) => ring.map(([x, y]) => [round(x), round(y)]));
         onAreaRef.current?.({ type: "Polygon", coordinates: rings });
+      });
+
+      // Clicking a hazard shape (tornado, watch, cone...) runs the cascade on it, like its
+      // "Run cascade" button. Only when the hazard is the top thing under the pointer: a click on
+      // an asset, the cascade or the current area keeps its normal popup, and drawing ignores it.
+      view.on("click", async (event) => {
+        if (sketch.state === "active") return;
+        const { results } = await view.hitTest(event);
+        const top = results.find((r) => r.type === "graphic" && r.graphic?.layer);
+        const id = top?.graphic.layer === hazardsLayer ? top.graphic.attributes?.hazardId : null;
+        const hazard = id ? hazardsById.current.get(id) : null;
+        if (hazard) onHazardClickRef.current?.(hazard);
       });
 
       esri.current = { view, Graphic, FeatureLayer, LayerSearchSource, sketch, search, basemaps, layers: { hazards: hazardsLayer, area, cascade } };
@@ -273,6 +297,37 @@ const CascadeMap = forwardRef(function CascadeMap(
     view.map.basemap = basemaps[basemap];
   }, [ready, basemap]);
 
+  // 2a') Weather radar overlay: loaded on first use, under every other layer, refreshed every 5 min.
+  useEffect(() => {
+    try { localStorage.setItem("cascade.radar", radar ? "on" : "off"); } catch { /* private mode */ }
+    if (!ready) return undefined;
+    const { view } = esri.current;
+    let cancelled = false;
+    (async () => {
+      if (radar && !esri.current.radar) {
+        const { default: MapImageLayer } = await import("@arcgis/core/layers/MapImageLayer");
+        if (cancelled || esri.current.radar) return;
+        esri.current.radar = new MapImageLayer({
+          url: RADAR_URL, title: "Weather radar", opacity: 0.6, refreshInterval: 5, listMode: "hide",
+        });
+      }
+      const layer = esri.current.radar;
+      if (!layer || view.destroyed) return;
+      if (radar) {
+        if (!view.map.layers.includes(layer)) view.map.layers.add(layer, 0);
+        layer.load().then(() => setRadarError("")).catch(() => {
+          if (cancelled) return;
+          setRadarError("Radar is unavailable right now.");
+          view.map.layers.remove(layer);
+          setRadar(false);
+        });
+      } else {
+        view.map.layers.remove(layer);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ready, radar]);
+
   // 2b) Turn point clustering on or off without rebuilding the layer.
   useEffect(() => {
     clusterRef.current = cluster;
@@ -297,28 +352,57 @@ const CascadeMap = forwardRef(function CascadeMap(
     }
   }, [ready, area, fitArea]);
 
-  // 3b) Live hazard outlines (alerts that come with a polygon, hurricane cones).
+  // 3b) Live hazard outlines (alerts with a polygon, county outlines fetched for watches,
+  //     hurricane cones). Colour = hazard type; line style and fill = level.
   useEffect(() => {
     if (!ready) return;
     const { Graphic, layers } = esri.current;
     layers.hazards.removeAll();
-    for (const h of hazards) {
-      const geom = h.geometry;
+    hazardsById.current = new Map(hazards.map((h) => [h.id, h]));
+    // Draw order: advisories and watches first, warnings, then tornado warnings on top.
+    const rank = (h) => (h.storm?.isTornado && h.level === "Warning" ? 3 : h.level === "Warning" ? 2 : h.level === "Watch" ? 1 : 0);
+    for (const h of [...hazards].sort((a, b) => rank(a) - rank(b))) {
+      const geom = h.geometry ?? h.outline;
+      if (!geom) continue;
       const rings = geom.type === "MultiPolygon" ? geom.coordinates.flat()
         : geom.type === "Polygon" ? geom.coordinates : null;
       if (!rings) continue;
-      const c = HAZARD_COLORS[h.level] ?? HAZARD_COLORS.Statement;
+      const tornado = h.storm?.isTornado && h.level === "Warning";
+      const c = categoryOf(h).color;
+      const look = tornado ? LEVEL_LOOK.Tornado : LEVEL_LOOK[h.level] ?? LEVEL_LOOK.Statement;
+      const mo = h.storm?.motion;
+      const info = [
+        h.headline,
+        h.storm?.detection,
+        mo?.knots ? `Moving ${mo.heading} at ${mo.mph} mph` : "",
+        h.areaDesc,
+      ].filter(Boolean).map(esc).join("<br/>");
       layers.hazards.add(new Graphic({
         geometry: { type: "polygon", rings, spatialReference: { wkid: 4326 } },
-        attributes: { event: h.event, info: [h.headline, h.areaDesc].filter(Boolean).join(" · ") },
+        attributes: {
+          hazardId: h.id,
+          event: h.event,
+          info: `${esc(categoryOf(h).label)} · ${esc(h.level)}${info ? `<br/>${info}` : ""}` +
+            "<br/><i>Clicking the shape runs the cascade on it.</i>",
+        },
         symbol: {
           type: "simple-fill",
-          color: [...c, 0.07],
-          outline: { color: [...c, 0.9], width: 1.5, style: h.level === "Cone" ? "dash" : "solid" },
+          color: [...c, look.fill],
+          outline: { color: [...c, 0.95], width: look.width, style: h.demo ? "dash" : look.style },
         },
         popupTemplate: { title: "{event}", content: "{info}" },
       }));
       if (h.track) addTrack(Graphic, layers.hazards, h);
+      // Storm motion: an arrow from the storm's position to where it would be in 30 minutes.
+      const line = motionLine(h, MOTION_MIN);
+      if (line) {
+        layers.hazards.add(new Graphic({
+          geometry: { type: "polyline", paths: [line.coordinates], spatialReference: { wkid: 4326 } },
+          attributes: { event: h.event, info: `${esc(`Moving ${mo.heading} at ${mo.mph} mph`)}<br/>Arrow: about ${MOTION_MIN} minutes of travel` },
+          symbol: arrowLine({ color: [...MOTION_COLOR, 0.95], width: 2.5, arrowSize: 12 }),
+          popupTemplate: { title: "{event}", content: "{info}" },
+        }));
+      }
     }
   }, [ready, hazards]);
 
@@ -407,13 +491,22 @@ const CascadeMap = forwardRef(function CascadeMap(
   return (
     <>
       <div ref={containerRef} className="map" aria-label="Map of infrastructure and the drawn area" />
-      <div className="basemap-switch" role="group" aria-label="Basemap">
-        {[["map", "Map"], ["satellite", "Satellite"]].map(([id, label]) => (
-          <button key={id} type="button" aria-pressed={basemap === id} onClick={() => setBasemap(id)}>
-            {label}
-          </button>
-        ))}
+      <div className="basemap-switch" role="toolbar" aria-label="Map options">
+        <span className="switch-group" role="group" aria-label="Basemap">
+          {[["map", "Map"], ["satellite", "Satellite"]].map(([id, label]) => (
+            <button key={id} type="button" aria-pressed={basemap === id} onClick={() => setBasemap(id)}>
+              {label}
+            </button>
+          ))}
+        </span>
+        <span className="switch-sep" aria-hidden="true" />
+        <button type="button" aria-pressed={radar} onClick={() => setRadar(!radar)}
+                title="NWS radar mosaic, updated every few minutes">
+          Radar
+        </button>
       </div>
+      {radarError && <p className="map-note" role="status">{radarError}</p>}
+      {hazards.length > 0 && <HazardLegend hazards={hazards} />}
     </>
   );
 });
@@ -485,14 +578,18 @@ const CLUSTER = {
 
 const WIRE_COLOR = [70, 82, 96, 0.65];
 
-// Live hazard outline colours, by alert level (NWS convention: warnings red, watches amber).
-const HAZARD_COLORS = {
-  Warning: [214, 40, 40],
-  Watch: [230, 140, 20],
-  Advisory: [200, 170, 30],
-  Statement: [110, 120, 135],
-  Cone: [130, 70, 200],
+// Live hazard outlines: colour comes from the hazard type (hazards.js CATEGORIES); the level
+// sets line style, width and fill, so a tornado watch and a tornado warning share a colour
+// but read differently.
+const LEVEL_LOOK = {
+  Tornado: { style: "solid", width: 3, fill: 0.16 },     // tornado warnings, drawn on top
+  Warning: { style: "solid", width: 2, fill: 0.1 },
+  Watch: { style: "dash", width: 2, fill: 0.05 },
+  Cone: { style: "dash", width: 1.75, fill: 0.07 },
+  Advisory: { style: "dot", width: 1.5, fill: 0.03 },
+  Statement: { style: "dot", width: 1.25, fill: 0.02 },
 };
+const MOTION_COLOR = [30, 30, 40];
 
 // Forecast-position circles, NHC style: letter = development stage, colour = intensity.
 const TRACK_COLORS = {
@@ -504,6 +601,27 @@ const TRACK_COLORS = {
 const TRACK_OTHER = [120, 120, 130];  // post-tropical, extratropical, low
 
 const linePaths = (g) => (g.type === "LineString" ? [g.coordinates] : g.coordinates);
+
+/** Bottom-left key for the hazard outlines: the types on the map now, and what the line styles mean. */
+function HazardLegend({ hazards }) {
+  const cats = categoryCounts(hazards);
+  const levels = [...new Set(hazards.map((h) => (h.storm?.isTornado && h.level === "Warning" ? "Warning" : h.level)))];
+  const order = ["Warning", "Watch", "Cone", "Advisory", "Statement"].filter((l) => levels.includes(l));
+  return (
+    <div className="hazard-legend" aria-label="Hazard outline key">
+      <ul>
+        {cats.map((c) => (
+          <li key={c.id}><i className="lg-cat" style={{ background: `rgb(${c.color.join(",")})` }} />{c.label}</li>
+        ))}
+      </ul>
+      <ul className="lg-levels">
+        {order.map((l) => (
+          <li key={l}><i className={`lg-level lg-${LEVEL_LOOK[l].style}`} />{l === "Cone" ? "Forecast cone" : l}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /** Past track (dashed), forecast track (solid) and lettered forecast positions for one storm. */
 function addTrack(Graphic, layer, hazard) {
