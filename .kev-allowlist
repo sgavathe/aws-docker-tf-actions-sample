@@ -1,0 +1,11 @@
+# Accepted exceptions for the KEV watch (scripts/security/kev_gate.py, .github/workflows/kev-watch.yml).
+#
+# A CVE in CISA's Known Exploited Vulnerabilities catalog is being exploited in the wild, so the
+# default is to fix it, not list it here. Add a line only when the vulnerable code can't be reached
+# in how this project runs it (e.g. a dev-only tool, a build stage that never ships), and give it a
+# short expiry so it gets looked at again. Expired lines stop applying and the check fails again.
+#
+# Format, one per line:
+#   CVE-ID            expires      reason
+# Example:
+#   CVE-2025-31125    2026-12-31   Vite dev server only, never run with --host; upgrade tracked in #42

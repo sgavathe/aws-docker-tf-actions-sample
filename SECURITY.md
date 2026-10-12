@@ -44,6 +44,7 @@ flowchart LR
 | `build-test` | PR Checks, .NET + Docker | 28 backend unit tests; both container images build | Every PR | Yes |
 | Pipeline tests | Infrastructure graph, pytest | 13 tests for the OSM graph builder | PRs touching `pipeline/` | No |
 | ECR scan on push | Amazon ECR basic scanning | Known CVEs in each pushed image | Every image push | No (ECR console) |
+| `kev` | KEV watch, Trivy 0.74.0 + `scripts/security/kev_gate.py` | CVEs in the dependencies or the Lambda image that are in CISA's Known Exploited Vulnerabilities catalog; GitHub Actions KEV names | Daily, PRs changing dependencies or images | No (not required); fails the run, unless listed in `.kev-allowlist` |
 
 None of the required workflows use path filters: a required check that never starts blocks a PR forever.
 
@@ -100,6 +101,30 @@ a locked default security group). The rest are skipped in `.checkov.yaml`, each 
 
 Delete a line from `.checkov.yaml` once it's fixed, so the check guards it from then on.
 
+## Known exploited vulnerabilities (KEV watch)
+
+CVE scanners report thousands of issues; CISA's [KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+lists the few hundred that attackers are actually using. The KEV watch (`.github/workflows/kev-watch.yml`) uses
+it as the bar for failing:
+
+1. **Trivy** (pinned to 0.74.0, checksum verified) lists every CVE in the npm lockfile (dev dependencies included, since KEV has listed build tools like Vite), the Python pipeline
+   (resolved to exact versions with `pip freeze`) and the Lambda image: the .NET base image's OS packages and the
+   NuGet packages in `backend.deps.json`.
+2. **`kev_gate.py`** downloads today's catalog (cisa.gov, falling back to CISA's `cisagov/kev-data` GitHub
+   mirror) and fails the run if any CVE is in it, or if a workflow uses a GitHub Action KEV names
+   (`tj-actions/changed-files`, `reviewdog/action-setup`...).
+3. The run summary lists matches with CISA's due date and ransomware use, every other critical/high CVE (reported,
+   not enforced), and what CISA added to the catalog in the last 7 days. Reports are kept as a 30-day artifact.
+
+It runs daily because the catalog changes several times a week: a dependency that was fine yesterday can be listed
+today. The first run (Oct 11, 2026, catalog 2026.10.08, 1,739 entries) found no matches; the closest were Vite
+(CVE-2025-31125, fixed in 5.4.16; this repo has 5.4.21) and Trivy's own March 2026 compromise (CVE-2026-33634,
+versions 0.69.4-0.69.6 only).
+
+A match is fixed by upgrading the package or base image. When the vulnerable code can't be reached here (a dev-only
+tool, a build stage that never ships), `.kev-allowlist` takes the CVE, an expiry date and the reason; expired lines
+stop applying, and lines that no longer match are reported so they can be deleted.
+
 ## When a check fails
 
 | Check | Real problem | False positive |
@@ -109,6 +134,7 @@ Delete a line from `.checkov.yaml` once it's fixed, so the check guards it from 
 | `iac` | Fix the Terraform | Add the ID to `.checkov.yaml` with a reason, or `#checkov:skip=CKV_AWS_xxx:reason` on the resource |
 | `policy` / `plan` | Fix the Terraform; the message names the resource | Narrow the rule and add a unit test |
 | `build-test` | Fix the code or test | |
+| `kev` | Upgrade the package or base image the summary names, before CISA's due date | Not reachable here: add it to `.kev-allowlist` with an expiry and the reason |
 
 Run the same checks locally before pushing:
 
@@ -117,6 +143,7 @@ scripts/security/check-sensitive.sh --history
 gitleaks git --redact .                                               # brew install gitleaks
 checkov --config-file .checkov.yaml -d infra -d serverless/terraform  # pip install checkov
 conftest verify -p policy                                             # brew install conftest
+scripts/security/kev-scan.sh --image                                  # brew install trivy, or Docker
 ```
 
 ## Outside the pipeline
