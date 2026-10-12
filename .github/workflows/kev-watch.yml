@@ -1,0 +1,123 @@
+name: KEV watch
+
+# Checks this repo against CISA's Known Exploited Vulnerabilities (KEV) catalog: CVEs that attackers
+# are actually using. Trivy finds the CVEs in the dependencies and in the Lambda image that runs the
+# API; scripts/security/kev_gate.py matches them against today's catalog and fails on any match
+# (exceptions with a reason and an expiry: .kev-allowlist). It also flags GitHub Actions that KEV
+# names (tj-actions/changed-files and the like) and lists what CISA added this week.
+#
+#   fs      npm (frontend/package-lock.json, dev dependencies included: build tools like Vite are
+#           where KEV has listed npm flaws), Python (pipeline, resolved with pip freeze), and any
+#           other lockfile Trivy recognises in the repo
+#   image   the Lambda image built from serverless/lambda/Dockerfile: OS packages of the .NET base
+#           image plus the NuGet packages in backend.deps.json
+#
+# Daily, because the catalog changes several times a week and a dependency that was fine yesterday
+# can be listed today; also on PRs that change dependencies or images. Not a required check, so the
+# path filter is safe. A failing scheduled run emails whoever last changed the schedule below.
+
+on:
+  schedule:
+    - cron: "23 11 * * *"   # daily 11:23 UTC (07:23 ET)
+  workflow_dispatch: {}
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      - "pipeline/requirements*.txt"
+      - "backend/**/*.csproj"
+      - "**/Dockerfile"
+      - ".github/workflows/**"
+      - ".kev-allowlist"
+      - "scripts/security/kev_gate.py"
+  push:
+    branches: [main]
+    paths:
+      - "frontend/package-lock.json"
+      - "pipeline/requirements*.txt"
+      - "backend/**/*.csproj"
+      - "**/Dockerfile"
+      - ".kev-allowlist"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kev-watch-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned and checksum-verified: Trivy's own release channel was compromised in March 2026
+  # (CVE-2026-33634, itself in KEV). Same version and checksum as the Prowler 5.44.0 image.
+  TRIVY_VERSION: "0.74.0"
+  TRIVY_SHA256: "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+
+jobs:
+  kev:
+    name: Known exploited vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Trivy (pinned, checksum verified)
+        run: |
+          curl -sSfL -o trivy.tgz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          rm trivy.tgz trivy
+          trivy --version
+
+      - name: Date for the vulnerability DB cache
+        id: day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ steps.day.outputs.day }}
+          restore-keys: trivy-db-
+
+      - name: Resolve Python dependencies to exact versions
+        run: |
+          # requirements.txt uses ranges; Trivy needs the versions pip actually installs.
+          python -m venv /tmp/pipeline-venv
+          /tmp/pipeline-venv/bin/pip install --quiet -r pipeline/requirements.txt
+          mkdir -p scan/python
+          /tmp/pipeline-venv/bin/pip freeze --exclude-editable > scan/python/requirements.txt
+          wc -l scan/python/requirements.txt
+
+      - name: Scan dependencies (Trivy fs)
+        run: |
+          mkdir -p out
+          trivy fs --scanners vuln --include-dev-deps --format json --output out/fs.json --quiet \
+            --skip-dirs "**/node_modules,**/.venv,**/bin,**/obj,**/dist,**/.terraform" .
+
+      - name: Build the Lambda image
+        run: docker build -f serverless/lambda/Dockerfile -t kev-scan/lambda:ci backend
+
+      - name: Scan the Lambda image (Trivy image)
+        run: trivy image --scanners vuln --format json --output out/lambda-image.json --quiet kev-scan/lambda:ci
+
+      - name: Match against the KEV catalog
+        if: always() && hashFiles('out/*.json') != ''
+        run: |
+          python scripts/security/kev_gate.py \
+            --summary "$GITHUB_STEP_SUMMARY" --json-out out/kev-results.json out/fs.json \
+            $( [ -f out/lambda-image.json ] && echo out/lambda-image.json )
+
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kev-watch-${{ github.run_id }}
+          path: out/
+          retention-days: 30

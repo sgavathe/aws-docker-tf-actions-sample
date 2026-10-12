@@ -21,7 +21,7 @@ COPY . .
 RUN RID="linux-$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)" && \
     dotnet publish -c Release -r "$RID" --self-contained false -o /app --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled-extra AS runtime
 
 # Lambda Web Adapter (pinned). Anything in /opt/extensions is started by Lambda.
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
