@@ -309,3 +309,69 @@ def test_chat_stops_at_daily_budget_without_calling_the_model(aws_app, monkeypat
 
 async def _done(v):
     return v
+
+
+# ---------------------------------------------------------------- agent loop guards
+
+class _Res:
+    def __init__(self, text, err=False):
+        from types import SimpleNamespace
+        self.content = [SimpleNamespace(type="text", text=text)]
+        self.structured_content = None if err else {"result": {"url": "/maps/m-1.html"}}
+        self.is_error = err
+
+
+def _run_agent(monkeypatch, replies, tool):
+    import asyncio
+    import agent
+    script = iter(replies)
+
+    async def fake_chat(msgs, tools):
+        return dict(next(script))
+
+    class Session:
+        async def call_tool(self, name, args):
+            return tool(name, args)
+
+    async def fake_open(stack, token):
+        return {"geo": Session()}
+
+    async def fake_catalog(sessions):
+        return ({"make_web_map": sessions["geo"], "map_crashes": sessions["geo"]}, [])
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    monkeypatch.setattr(agent, "open_servers", fake_open)
+    monkeypatch.setattr(agent, "tool_catalog", fake_catalog)
+    history = [{"role": "user", "content": "map those"}]
+
+    async def go():
+        return [e async for e in agent.agent_events("t", history)]
+    return asyncio.run(go()), history
+
+
+def _call(name, args, i):
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "function": {"name": name, "arguments": args}}]}
+
+
+def test_repeated_failures_stop_the_turn(monkeypatch):
+    import agent
+    bad = {"layers": [{"name": "S", "sql": "SELECT id, lon, lat FROM infra.substations"}], "title": "t"}
+    events, history = _run_agent(monkeypatch, [_call("make_web_map", bad, i) for i in range(10)],
+                                 lambda n, a: _Res('column "lon" does not exist', err=True))
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert len(results) == 3                                              # not 10
+    assert "already made this exact call" in results[1]["text"]
+    answer = [e for e in events if e["type"] == "answer"][0]["content"]
+    assert answer.startswith("I couldn't complete this: make_web_map failed 3 times") and "lon" in answer
+    agent.to_bedrock(history)                                             # history still valid for the next turn
+
+
+def test_tool_call_written_as_text_is_run(monkeypatch):
+    replies = [{"role": "assistant", "content": "Here: [map_crashes(node='536154', year_from=2020)](x)"},
+               _call("map_crashes", {"node": "536154", "year_from": 2020}, 1),
+               {"role": "assistant", "content": "29 crashes since 2020. Map: /maps/m-1.html"}]
+    events, history = _run_agent(monkeypatch, replies, lambda n, a: _Res('{"url": "/maps/m-1.html"}'))
+    assert [e["tool"] for e in events if e["type"] == "tool_call"] == ["map_crashes"]
+    answer = [e for e in events if e["type"] == "answer"][0]["content"]
+    assert answer == "29 crashes since 2020. Map: /maps/m-1.html"         # real link kept
+    assert any("[agent note]" in str(m.get("content")) for m in history)

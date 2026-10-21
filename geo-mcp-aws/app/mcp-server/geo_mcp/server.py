@@ -425,28 +425,61 @@ def build_server(verifier=None) -> MCPServer:
 
     @mcp.tool(annotations=RW)
     @audited(WRITER)
-    def make_web_map(title: str, layers: list[dict] | None = None, cascade_from: str | None = None,
-                     all_assets: bool = False, place: str | None = None,
+    def make_web_map(title: str = "Map", layers: list[dict] | str | None = None, cascade_from: str | None = None,
+                     all_assets: bool = False, asset_ids: list[str] | str | None = None,
+                     place: str | None = None, lon: float | None = None, lat: float | None = None,
                      radius_miles: float | None = None) -> dict:
         """Publish an offline WEB map (browser). For ArcGIS Pro use export_for_pro + build_pro_map.
-        Easiest options first:
-        - all_assets=true: every infrastructure layer (substations, water, cell towers, hospitals),
-          optionally limited to radius_miles around place (e.g. place='Richmond center').
+        Easiest options first (no SQL needed):
+        - asset_ids=['SUB-06','WTR-03']: map those assets (e.g. the ids assets_near returned).
+        - all_assets=true: every infrastructure layer, optionally within radius_miles of place
+          (e.g. place='Richmond center') or of lon + lat.
         - cascade_from='SUB-06': that asset's failure cascade (failed, lost, degraded, links).
         - layers=[{"name": "Hospitals", "sql": "SELECT id, name, geom FROM infra.hospitals",
-          "color": "#d62728"}] for custom SQL layers (color optional).
-        Returns the URL to open."""
+          "color": "#d62728"}] only for custom SQL; tables store location in `geom` (there are no
+          lon/lat columns). Returns the URL to open."""
+        if isinstance(layers, str):   # some models send the list as JSON text
+            try:
+                layers = json.loads(layers)
+            except ValueError:
+                raise ValueError("layers must be a list of {name, sql}; or use asset_ids / all_assets / cascade_from")
         layers = list(layers or [])
-        if all_assets:
-            lon = lat = None
-            if place:
-                _, lon, lat = resolve_place(place)
-            layers = [{"name": n, "color": c, "sql": asset_layer_sql(q, lon, lat, radius_miles)}
+        for l in layers:
+            if not isinstance(l, dict) or not l.get("sql"):
+                raise ValueError("each layer needs name and sql (SELECT ..., geom FROM ...); "
+                                 "to map known assets use asset_ids=['SUB-06', ...] instead")
+        if place:
+            _, lon, lat = resolve_place(place)
+        if isinstance(asset_ids, str):
+            asset_ids = [a for a in re.split(r"[,\s]+", asset_ids) if a]
+        if asset_ids:
+            ids = [str(a).strip().upper() for a in asset_ids][:200]
+            bad = [a for a in ids if not re.fullmatch(r"[A-Z]{2,5}-\d{1,4}", a)]
+            if bad:
+                raise ValueError(f"asset ids look like SUB-06, WTR-03, CEL-14, HOSP-02; not {bad[0]!r}")
+            quoted = ",".join(f"'{a}'" for a in ids)   # validated above: letters, digits and '-' only
+            layers = [{"name": n, "color": c, "sql": f"SELECT * FROM ({q}) AS a WHERE a.id IN ({quoted})"}
+                      for n, _, c, q in ASSET_LAYERS] + layers
+        elif all_assets:
+            layers = [{"name": n, "color": c, "sql": asset_layer_sql(q, lon, lat, radius_miles or (5 if lon is not None else None))}
                       for n, _, c, q in ASSET_LAYERS] + layers
         if (not layers and not cascade_from) or len(layers) > 8:
-            raise ValueError("give all_assets=true, cascade_from, or 1-8 layers")
-        built = [{"name": str(l["name"])[:60], "color": l.get("color"),
-                  "geojson": as_feature_collection(l["sql"])} for l in layers]
+            raise ValueError("give asset_ids, all_assets=true, cascade_from, or 1-8 layers")
+        built = []
+        for l in layers:
+            try:
+                fc = as_feature_collection(l["sql"])
+            except ValueError:
+                raise
+            except Exception as exc:   # bad model SQL: say how to fix it instead of the raw error alone
+                raise ValueError(f"layer {str(l.get('name'))[:40]!r}: {str(exc).splitlines()[0][:200]}. Tables store "
+                                 "location in geom (no lon/lat columns): SELECT id, name, geom FROM infra.<table>; "
+                                 "or skip SQL with asset_ids=[...] or all_assets=true") from None
+            if asset_ids and not fc["features"]:
+                continue   # asset types with none of the requested ids
+            built.append({"name": str(l["name"])[:60], "color": l.get("color"), "geojson": fc})
+        if asset_ids and not built:
+            raise ValueError(f"none of {asset_ids} exist; check the ids with assets_near or list_layers")
         if cascade_from:
             built = cascade_layers(cascade_from) + built
         built = [{k: v for k, v in b.items() if v is not None} for b in built]

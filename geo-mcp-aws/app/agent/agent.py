@@ -26,6 +26,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+MAX_TOOL_FAILURES = int(os.environ.get("MAX_TOOL_FAILURES", "3"))   # same tool failing this often ends the turn
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.amazon.nova-lite-v1:0")
 MODEL = BEDROCK_MODEL_ID if LLM_PROVIDER == "bedrock" else os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 # sigv4: the MCP server is an IAM-protected Lambda URL. The request is signed with this Lambda's
@@ -44,8 +45,11 @@ SYSTEM = (
     "whenever the user says ArcGIS, ArcGIS Pro, Pro, aprx or layout, you MUST make a Pro map: "
     "call export_for_pro (with place/radius_miles if given), then build_pro_map with "
     "layers=pro_layers from its result and a title; do not substitute a web map. Web maps: "
-    "make_web_map with all_assets=true for 'map everything/all layers'; cascade_from=X to map a "
-    "failure; layers=[...] with SQL returning geom for anything else. Crashes: crash_summary for "
+    "make_web_map with all_assets=true for 'map everything/all layers' (add lon, lat, radius_miles "
+    "or place to limit it); asset_ids=[...] to map assets you found (e.g. from assets_near: 'map "
+    "those'); cascade_from=X to map a failure; layers=[...] with SQL only for anything else, and "
+    "tables store location in geom (there are no lon/lat columns). Never write a tool call as text "
+    "in the answer: call the tool. Crashes: crash_summary for "
     "overviews; crash_hotspots for worst/most-crash intersections (rank_by='severity' for most "
     "dangerous; pass filters like year_from, severity ['K','A'], collision 'angle', route 'US-460', "
     "juris 'Prince George' for a county or city (typos are tolerated), "
@@ -321,9 +325,14 @@ async def agent_events(token: str, messages: list[dict]):
     """Run one user turn. `messages` holds the conversation (without the system prompt) and is
     extended in place. Yields events: start, tool_call, tool_result, answer."""
     made: set[str] = set()   # /maps/... paths the tools returned this turn
+    failed_calls: dict[str, int] = {}   # tool + exact arguments -> failures this turn
+    failed_tools: dict[str, int] = {}   # tool -> failures this turn
+    nudged = False
     async with AsyncExitStack() as stack:
         sessions = await open_servers(stack, token)
         routes, tools = await tool_catalog(sessions)
+        written_call = re.compile(r"\b(" + "|".join(map(re.escape, sorted(routes, key=len, reverse=True))) + r")\s*\(") \
+            if routes else None
         yield {"type": "start", "model": MODEL, "servers": list(sessions), "tools": len(tools)}
         for _ in range(MAX_STEPS):
             msg = await chat([{"role": "system", "content": system_prompt(sessions)}] + messages, tools)
@@ -335,13 +344,26 @@ async def agent_events(token: str, messages: list[dict]):
             messages.append(msg)
             calls = msg.get("tool_calls") or []
             if not calls:
-                yield {"type": "answer", "content": checked_links(msg.get("content", ""), made)}
+                text = msg.get("content", "")
+                hit = written_call.search(text) if written_call else None
+                if hit and not nudged:   # the model typed a tool call instead of making it: ask once to call it
+                    nudged = True
+                    messages.append({"role": "user", "content": (
+                        f"[agent note] Your answer contains a tool call written as text ({hit.group(1)}(...)). "
+                        "Do not write tool calls in the answer: call the tool now, then answer.")})
+                    continue
+                yield {"type": "answer", "content": checked_links(text, made)}
                 return
+            stop = None
             for call in calls:
                 fn = call["function"]
                 args = fn.get("arguments") or {}
                 if isinstance(args, str):
                     args = json.loads(args or "{}")
+                if stop:   # every toolUse needs a result, even the ones we no longer run
+                    messages.append({"role": "tool", "tool_name": fn["name"], "tool_call_id": call["id"],
+                                     "content": "ERROR: skipped (stopped after repeated failures)"})
+                    continue
                 yield {"type": "tool_call", "tool": fn["name"], "args": args}
                 session = routes.get(fn["name"])
                 if session is None:
@@ -354,10 +376,25 @@ async def agent_events(token: str, messages: list[dict]):
                     except Exception as exc:   # transport failure: tell the model, keep the turn going
                         print(f"[agent] {fn['name']} failed: {describe(exc)}", file=sys.stderr)
                         out, is_error, data = f"ERROR: the {fn['name']} call failed ({describe(exc)}); try again or simplify", True, None
+                if is_error:
+                    sig = fn["name"] + json.dumps(args, sort_keys=True, default=str)
+                    failed_calls[sig] = failed_calls.get(sig, 0) + 1
+                    failed_tools[fn["name"]] = failed_tools.get(fn["name"], 0) + 1
+                    if failed_calls[sig] >= 2:
+                        out += ("\n[agent note] You already made this exact call and it failed the same way. "
+                                "Do not repeat it: change the arguments as the error says, or tell the user what failed.")
+                    if failed_tools[fn["name"]] >= MAX_TOOL_FAILURES:
+                        reason = out.split("\n")[0].removeprefix("ERROR: ")[:300]
+                        stop = (f"I couldn't complete this: {fn['name']} failed {failed_tools[fn['name']]} times. "
+                                f"Last error: {reason}")
                 made.update(MAP_PATH.findall(out))
                 yield {"type": "tool_result", "tool": fn["name"], "is_error": is_error,
                        "data": data, "text": None if data is not None else out[:4000]}
                 messages.append({"role": "tool", "tool_name": fn["name"], "tool_call_id": call["id"], "content": out})
+            if stop:
+                messages.append({"role": "assistant", "content": stop})
+                yield {"type": "answer", "content": stop}
+                return
         yield {"type": "answer", "content": "Stopped: reached the step limit without a final answer."}
 
 
