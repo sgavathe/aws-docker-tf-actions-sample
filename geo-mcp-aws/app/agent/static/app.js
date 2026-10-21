@@ -107,7 +107,64 @@ function addMsg(cls, text) {
   $("log").append(m); m.scrollIntoView({ block: "end" });
   return m;
 }
-document.querySelectorAll("#suggest button").forEach((b) => b.addEventListener("click", () => { $("q").value = b.dataset.q; send(); }));
+/* ---------- example questions (empty chat + Examples button) ---------- */
+const EXAMPLES = [
+  ["Crashes", [
+    ["Crashes by severity, Prince George", "How many crashes in Prince George County since 2020, by severity?"],
+    ["Crash types, color-coded map", "What type of crashes are highest in Prince George County since 2020? Color code the map by collision type"],
+    ["Heat map, Henrico", "Heat map of crashes in Henrico since 2022"],
+    ["Statistical hot spots (Gi*)", "Statistically significant crash hot spots in Chesterfield since 2020"],
+    ["Night vs day fatal crashes", "Compare night and day fatal crashes in Prince George County since 2020"],
+  ]],
+  ["Intersections", [
+    ["Crashes at two roads", "How many crashes since 2020 at Middle Road and Prince George Drive? Map them"],
+    ["Most dangerous intersections", "Most dangerous intersections in Hopewell since 2021, ranked by severity"],
+    ["One intersection's history", "Explain the crash history at the Temple Ave and Puddledock Rd intersection"],
+  ]],
+  ["Dashboard and road network", [
+    ["Safety dashboard", "Make a crash safety dashboard for Prince George County since 2020"],
+    ["Critical intersections (network)", "Which intersections in Prince George County are the most critical in the road network?"],
+    ["Critical + closure, Petersburg", "Find the most critical and dangerous intersection in Petersburg, then show what happens if it's closed"],
+  ]],
+  ["Closures and cascades", [
+    ["Close an intersection", "What if the Middle Road and Prince George Drive intersection is closed? Map the detours"],
+    ["Substation failure", "If substation SUB-06 fails, what loses service? Make a web map."],
+    ["Worst substation for hospitals", "Which substation failure would cut service to the most hospitals?"],
+  ]],
+  ["Maps and data", [
+    ["All assets and dependencies", "Map all assets and their dependencies"],
+    ["Assets near a point", "Which critical assets are within 4 km of -77.45, 37.55?"],
+    ["Export for ArcGIS Pro / QGIS", "Export crashes in Prince George County since 2023 as GeoJSON for ArcGIS Pro"],
+  ]],
+];
+function pickExample(q) {
+  $("q").value = q; closeExamples(); $("q").focus();
+  $("q").setSelectionRange(q.length, q.length);
+}
+function renderExamples(box) {
+  box.replaceChildren(...EXAMPLES.map(([group, items]) => {
+    const g = el("div", "exgroup");
+    g.append(el("h3", "", group));
+    const chips = el("div", "chips");
+    items.forEach(([label, q]) => {
+      const b = el("button", "", label); b.type = "button"; b.title = q;
+      b.addEventListener("click", () => pickExample(q));
+      chips.append(b);
+    });
+    g.append(chips);
+    return g;
+  }));
+}
+function closeExamples() { $("expop").hidden = true; $("exbtn").setAttribute("aria-expanded", "false"); }
+renderExamples($("examples"));
+renderExamples($("expop"));
+$("exbtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = $("expop").hidden;
+  $("expop").hidden = !open; $("exbtn").setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", (e) => { if (!$("expop").hidden && !$("expop").contains(e.target)) closeExamples(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeExamples(); });
 $("composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 

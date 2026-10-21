@@ -29,20 +29,20 @@
   <section class="chat" aria-label="Conversation">
     <div class="log" id="log" aria-live="polite">
       <div class="empty" id="empty">
-        <h2>Ask about the infrastructure network</h2>
+        <h2>Ask about crashes, roads and infrastructure</h2>
         <p>Answers come only from the project database, through tools that check your role and log every call.</p>
-        <div class="chips" id="suggest">
-          <button type="button" data-q="If substation SUB-06 fails, what loses service? Make a web map.">If SUB-06 fails, what loses service?</button>
-          <button type="button" data-q="Which critical assets are within 4 km of -77.45, 37.55?">Assets within 4 km of a point</button>
-          <button type="button" data-q="Which substation failure would cut service to the most hospitals?">Worst substation for hospitals</button>
-          <button type="button" data-q="List the hospitals with their beds and backup power hours.">Hospitals and backup hours</button>
-        </div>
+        <p class="exhint">Try one: click to put it in the box, change the county or year if you like, then Ask.</p>
+        <div id="examples" class="examples"></div>
       </div>
     </div>
     <form class="composer" id="composer">
       <label for="q" class="sr">Your question</label>
       <textarea id="q" rows="2" placeholder="Ask a question, e.g. what if WTR-06 fails?" required maxlength="4000"></textarea>
-      <button type="submit" id="send">Ask</button>
+      <div class="sendcol">
+        <button type="submit" id="send">Ask</button>
+        <button type="button" id="exbtn" class="exbtn" aria-expanded="false" aria-controls="expop">Examples</button>
+      </div>
+      <div id="expop" class="expop" role="dialog" aria-label="Example questions" hidden></div>
     </form>
   </section>
 
