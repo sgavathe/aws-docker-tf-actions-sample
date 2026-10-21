@@ -147,18 +147,31 @@ def _road_key(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
-def route_pattern(road: str) -> tuple[str, str]:
-    """'VA-156', 'SR 156', 'Route 630', '630', 'US 460', 'I-95' or a name listed in road_names.json
-    -> (regex for crash.crashes.route_label, the label used)."""
+def route_pattern(road: str) -> tuple[str, str, str]:
+    """A road as the user names it -> (column, regex, label) for matching crash records:
+      'VA-156', 'SR 156', 'Route 630', '630', 'US 460', 'I-95'  -> route_label
+      names listed in road_names.json                           -> route_label of that route
+      any other name ('Middle Road', 'Prince George Drive')     -> the street name VDOT records
+                                                                   (ROUTE_OR_STREET_NM, in the daily
+                                                                   ArcGIS sync), whole words, any case"""
     label = road_names().get(_road_key(road), road)
     m = re.search(r"(?i)\b(i|us|va|sr|rt|route|state route|sc)?[\s-]*0*(\d{1,5})\b", label)
-    if not m:
-        raise ValueError(f"{road!r} is not a route number and is not in road_names.json. The crash data has "
-                         f"route numbers only (e.g. 'VA-156', 'Rt 630'); add the street name to road_names.json "
-                         f"or give the route number")
-    prefix, num = (m.group(1) or "").lower(), m.group(2)
-    pre = {"i": "I-", "us": "US-", "va": "VA-", "sr": "VA-", "state route": "VA-", "rt": "Rt ", "route": None, "sc": "Rt "}.get(prefix)
-    return (f"^{re.escape(pre)}{num}$" if pre else f"(^|[^0-9]){num}$"), label
+    if m:
+        prefix, num = (m.group(1) or "").lower(), m.group(2)
+        pre = {"i": "I-", "us": "US-", "va": "VA-", "sr": "VA-", "state route": "VA-", "rt": "Rt ", "route": None,
+               "sc": "Rt "}.get(prefix)
+        return "route_label", (f"^{re.escape(pre)}{num}$" if pre else f"(^|[^0-9]){num}$"), label
+    words = _road_key(label).split()
+    if not words or not all(re.fullmatch(r"[a-z0-9]{1,30}", w) for w in words):
+        raise ValueError(f"{road!r} is not a route number or a street name")
+    # whole words in order: "middle" matches "MIDDLE RD" but not "MIDDLETON"
+    return "street", r"\m" + r"\s+".join(words) + r"\M", label
+
+
+def road_match_sql(kind: str, param: str) -> str:
+    if kind == "street":
+        return f"(props->>'ROUTE_OR_STREET_NM') ~* %({param})s"
+    return f"route_label ~ %({param})s"
 
 
 def sev_cols() -> str:
@@ -321,13 +334,13 @@ def register(mcp, srv) -> None:
     def find_intersection(road_a: str, road_b: str, juris: str | None = None, year_from: int | None = None,
                           year_to: int | None = None) -> dict:
         """Find where two roads meet and count the crashes there. road_a/road_b: route numbers
-        ('VA-156', 'Rt 630', 'US-460', '630') or street names listed in road_names.json. The crash
-        data has NO street names, only routes. juris narrows to a county/city. Returns candidate
+        ('VA-156', 'Rt 630', 'US-460', '630') or street names ('Middle Road', 'Prince George Drive').
+        juris narrows to a county/city. Returns candidate
         intersection nodes (the same pair can meet more than once) with crash counts; pass node to
         map_crashes or crash_profile for a map or details."""
         ensure_loaded()
-        ra, la = route_pattern(road_a)
-        rb, lb = route_pattern(road_b)
+        ka, ra, la = route_pattern(road_a)
+        kb, rb, lb = route_pattern(road_b)
         f = filters(juris=juris, year_from=year_from, year_to=year_to)
         where, p = build_where(srv, f)
         jw, jp = build_where(srv, filters(juris=juris))
@@ -336,8 +349,9 @@ def register(mcp, srv) -> None:
         rows = fetch(f"""
             WITH n AS (SELECT node FROM crash.crashes WHERE node IS NOT NULL AND {jw}
                        GROUP BY node
-                       HAVING bool_or(route_label ~ %(ra)s) AND bool_or(route_label ~ %(rb)s))
-            SELECT c.node, string_agg(DISTINCT c.route_label, ' & ') AS routes, count(*) AS crashes,
+                       HAVING bool_or({road_match_sql(ka, "ra")}) AND bool_or({road_match_sql(kb, "rb")}))
+            SELECT c.node, string_agg(DISTINCT c.route_label, ' & ') AS routes,
+                   string_agg(DISTINCT c.props->>'ROUTE_OR_STREET_NM', ' & ') AS streets, count(*) AS crashes,
                    {sev_cols()}, min(c.crash_year) || '-' || max(c.crash_year) AS years,
                    round(ST_X(ST_Centroid(ST_Collect(c.geom)))::numeric, 5) AS lon,
                    round(ST_Y(ST_Centroid(ST_Collect(c.geom)))::numeric, 5) AS lat
@@ -345,7 +359,8 @@ def register(mcp, srv) -> None:
             GROUP BY c.node ORDER BY crashes DESC LIMIT 10""", p)
         if not rows:
             raise ValueError(f"no crash-coded intersection of {la} and {lb}"
-                             + (f" in {juris}" if juris else "") + " in the selected years. Check the route numbers.")
+                             + (f" in {juris}" if juris else "") + " in the selected years. Check the names or "
+                             "route numbers (street names come from the daily ArcGIS sync).")
         return {"scope": scope(srv, f), "road_a": la, "road_b": lb, "intersections": rows,
                 "next": "map_crashes(node=<node>, same years) to map them; crash_profile(node=...) for details"}
 

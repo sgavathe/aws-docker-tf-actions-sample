@@ -37,13 +37,12 @@ tf apply -input=false $APPROVE "${TFVARS[@]}" \
   -var "mcp_image=$MCP_IMAGE" -var "chat_image=$CHAT_IMAGE" -var "jobs_image=$JOBS_IMAGE"
 
 echo "==> [4/7] point the functions at the new images"
-for kind in mcp chat jobs; do
-  fn="$(tf output -json function_names | python3 -c "import json,sys; print(json.load(sys.stdin)['$kind'])")"
+while read -r fn kind; do
   img_var="$(echo "$kind" | tr '[:lower:]' '[:upper:]')_IMAGE"
   aws lambda update-function-code --function-name "$fn" --image-uri "${!img_var}" > /dev/null
   aws lambda wait function-updated --function-name "$fn"
   echo "    $fn -> ${!img_var##*:}"
-done
+done < <(tf output -json deploy_targets | python3 -c 'import json,sys; [print(f, k) for f, k in json.load(sys.stdin).items()]')
 
 echo "==> [5/7] map libraries -> s3://$(tf output -raw data_bucket)/vendor/"
 "$HERE/scripts/sync-vendor.sh" "$(tf output -raw data_bucket)"
@@ -70,7 +69,8 @@ cat <<EOF
 Deployed: $SITE
 Next:
   1. Create users (no self sign-up):   geo-mcp-aws/scripts/users.sh analyst writer
-  2. Load crashes (optional):           geo-mcp-aws/scripts/load-crashes.sh ~/Downloads/CrashData.geojson
+  2. Crashes sync daily from VDOT (05:17 ET). First sync now:
+       aws lambda invoke --function-name geo-devops-demo-geomcp-ingest --invocation-type Event --payload '{"force":true}' --cli-binary-format raw-in-base64-out /dev/null
   3. GitHub secret AWS_GEO_MCP_ROLE_ARN = $(tf output -raw github_deploy_role_arn)
      GitHub variable GEO_MCP_URL        = $SITE
 EOF

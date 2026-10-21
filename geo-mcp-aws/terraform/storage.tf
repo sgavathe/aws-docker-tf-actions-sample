@@ -59,6 +59,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
   }
 
   rule {
+    id     = "expire-daily-sync-parts"
+    status = "Enabled"
+    filter {
+      prefix = "import/arcgis/2"
+    }
+    expiration {
+      days = 7
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
+  rule {
     id     = "old-versions-and-uploads"
     status = "Enabled"
     filter {}

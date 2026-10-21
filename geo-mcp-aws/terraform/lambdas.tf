@@ -41,6 +41,13 @@ locals {
     chat = "${local.name}-chat"
     jobs = "${local.name}-jobs"
   }
+  # functions whose code a deploy updates, and which image each runs
+  deploy_targets = {
+    mcp    = { function = "${local.name}-mcp", image = "mcp" }
+    chat   = { function = "${local.name}-chat", image = "chat" }
+    jobs   = { function = "${local.name}-jobs", image = "jobs" }
+    ingest = { function = "${local.name}-ingest", image = "jobs" }
+  }
 }
 
 # tfsec:ignore:aws-logs-log-group-customer-key  (KMS CMK ~$1/month; AWS-managed encryption is on)

@@ -55,3 +55,4 @@ skip-check:
   - CKV2_AWS_27   # Postgres query logging (log_statement): log volume/cost; errors and connections are exported
   - CKV_AWS_305   # CloudFront default root object: "/" is served by the chat Lambda, not an S3 object
   - CKV_AWS_354   # Performance Insights with a KMS CMK (~$1/month); AWS-managed encryption is on
+  - CKV_AWS_297   # EventBridge Scheduler with a KMS CMK (~$1/month); the schedule input is an empty {}

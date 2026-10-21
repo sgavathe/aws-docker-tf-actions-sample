@@ -76,7 +76,7 @@ resource "aws_iam_role_policy" "github_deploy" {
         Sid      = "UpdateTheseFunctionsCode"
         Effect   = "Allow"
         Action   = ["lambda:UpdateFunctionCode", "lambda:GetFunction", "lambda:GetFunctionConfiguration"]
-        Resource = [aws_lambda_function.mcp.arn, aws_lambda_function.chat.arn, aws_lambda_function.jobs.arn]
+        Resource = [aws_lambda_function.mcp.arn, aws_lambda_function.chat.arn, aws_lambda_function.jobs.arn, aws_lambda_function.ingest.arn]
       },
       {
         Sid      = "SyncMapLibraries"

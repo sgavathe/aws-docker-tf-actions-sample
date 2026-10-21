@@ -94,7 +94,19 @@ Prerequisites: terraform ≥ 1.5, Docker with buildx, Node 20+, Python 3 with bo
    ./geo-mcp-aws/scripts/users.sh analyst writer     # can make maps and exports
    ./geo-mcp-aws/scripts/users.sh viewer reader      # read-only tools
    ```
-4. **Load crash data (optional, public VDOT data only).**
+4. **Crash data syncs itself daily** from VDOT's public ArcGIS layer (`terraform/ingest.tf`, 05:17 ET):
+   the ingest Lambda (outside the VPC) pages all ~1.16M records by OBJECTID into S3 parts, then one
+   load job upserts them into Aurora. It does nothing when VDOT hasn't edited the layer. Run it now:
+   ```bash
+   aws lambda invoke --function-name geo-devops-demo-geomcp-ingest --invocation-type Event \
+     --cli-binary-format raw-in-base64-out --payload '{"force":true}' /dev/null
+   aws logs tail /aws/lambda/geo-devops-demo-geomcp-ingest --follow
+   ```
+   The synced layer includes street names (`ROUTE_OR_STREET_NM`), so `find_intersection` accepts
+   "Middle Road" and "Prince George Drive" as well as route numbers. Records VDOT deletes upstream
+   are not deleted here (upsert only).
+
+   **Or load a file once (optional, public VDOT data only).**
    ```bash
    ./geo-mcp-aws/scripts/load-crashes.sh ~/Downloads/CrashData_Basic.geojson
    ```

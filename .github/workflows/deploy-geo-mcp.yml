@@ -102,11 +102,12 @@ jobs:
       - name: Point the functions at the new images
         run: |
           . ./images.env
-          for kind in mcp chat jobs; do
-            var="$(echo "$kind" | tr '[:lower:]' '[:upper:]')_IMAGE"
-            aws lambda update-function-code --function-name "$PREFIX-$kind" --image-uri "${!var}" > /dev/null
-            aws lambda wait function-updated --function-name "$PREFIX-$kind"
-            echo "$PREFIX-$kind -> ${!var##*:}"
+          # function suffix -> image (the daily ingest runs the jobs image with another handler)
+          for pair in mcp:MCP chat:CHAT jobs:JOBS ingest:JOBS; do
+            fn="$PREFIX-${pair%%:*}"; var="${pair##*:}_IMAGE"
+            aws lambda update-function-code --function-name "$fn" --image-uri "${!var}" > /dev/null
+            aws lambda wait function-updated --function-name "$fn"
+            echo "$fn -> ${!var##*:}"
           done
 
       - name: Map libraries

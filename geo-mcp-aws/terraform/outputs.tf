@@ -39,3 +39,8 @@ output "github_deploy_role_arn" {
 output "bedrock_model_id" {
   value = var.bedrock_model_id
 }
+
+output "deploy_targets" {
+  description = "function -> image kind, used by scripts/deploy.sh and the deploy workflow"
+  value       = { for k, v in local.deploy_targets : v.function => v.image }
+}
