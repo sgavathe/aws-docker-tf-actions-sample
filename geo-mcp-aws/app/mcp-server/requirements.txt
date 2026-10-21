@@ -1,0 +1,5 @@
+# Pinned for reproducible, mirrorable builds (bundle.sh downloads these as wheels).
+mcp==2.2.0
+pyjwt[crypto]==2.10.1
+psycopg[binary]==3.2.10
+ijson==3.6.0

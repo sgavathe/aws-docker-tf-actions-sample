@@ -1,4 +1,4 @@
-# Checkov (static Terraform scan) for infra/ and serverless/terraform/.
+# Checkov (static Terraform scan) for infra/, serverless/terraform/ and geo-mcp-aws/terraform/.
 # Every skip below is a deliberate, written-down trade-off for a low-cost public demo.
 # Anything NOT listed fails the "Security / iac" check. Remove a line once it's fixed.
 framework:
@@ -45,3 +45,13 @@ skip-check:
   - CKV_AWS_355   # ECS deploy role: some statements use Resource "*" (scope them to the project's ARNs)
   # --- Not applicable to this design
   - CKV_AWS_356   # Resource "*" in the Prowler audit role: read-only, must read every resource in the account
+  # --- geo-mcp-aws/terraform (Aurora + Cognito + DynamoDB), same cost trade-offs as above
+  - CKV_AWS_327   # Aurora encrypted with a KMS CMK (~$1/month); AWS-managed storage encryption is on
+  - CKV_AWS_119   # DynamoDB sessions table with a KMS CMK; AWS-owned key encryption is on
+  - CKV_AWS_139   # Aurora deletion protection: demo stack, destroyed on purpose (var.db_deletion_protection)
+  - CKV_AWS_28    # DynamoDB point-in-time recovery: sessions are disposable (8 h TTL)
+  - CKV2_AWS_8    # AWS Backup plan for Aurora: automated backups (1 day) are on; Backup adds cost
+  - CKV_AWS_118   # RDS enhanced monitoring: per-second OS metrics cost money; Performance Insights (free tier) is on
+  - CKV2_AWS_27   # Postgres query logging (log_statement): log volume/cost; errors and connections are exported
+  - CKV_AWS_305   # CloudFront default root object: "/" is served by the chat Lambda, not an S3 object
+  - CKV_AWS_354   # Performance Insights with a KMS CMK (~$1/month); AWS-managed encryption is on

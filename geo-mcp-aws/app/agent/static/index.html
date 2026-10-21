@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geo Analyst Assistant</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>Geo Analyst Assistant</h1>
+      <p class="sub">Critical infrastructure cascade analysis · synthetic demo data</p>
+    </div>
+  </div>
+  <div class="who" id="who" hidden>
+    <span class="badge" id="enclave">Enclave</span>
+    <span id="user"></span>
+    <span id="roles"></span>
+    <button class="ghost" id="newchat" type="button">New chat</button>
+    <button class="ghost" id="signout" type="button">Sign out</button>
+  </div>
+</header>
+
+<main class="layout" id="app" hidden>
+  <section class="chat" aria-label="Conversation">
+    <div class="log" id="log" aria-live="polite">
+      <div class="empty" id="empty">
+        <h2>Ask about the infrastructure network</h2>
+        <p>Answers come only from the enclave database, through tools that check your role and log every call.</p>
+        <div class="chips" id="suggest">
+          <button type="button" data-q="If substation SUB-06 fails, what loses service? Make a web map.">If SUB-06 fails, what loses service?</button>
+          <button type="button" data-q="Which critical assets are within 4 km of -77.45, 37.55?">Assets within 4 km of a point</button>
+          <button type="button" data-q="Which substation failure would cut service to the most hospitals?">Worst substation for hospitals</button>
+          <button type="button" data-q="List the hospitals with their beds and backup power hours.">Hospitals and backup hours</button>
+        </div>
+      </div>
+    </div>
+    <form class="composer" id="composer">
+      <label for="q" class="sr">Your question</label>
+      <textarea id="q" rows="2" placeholder="Ask a question, e.g. what if WTR-06 fails?" required maxlength="4000"></textarea>
+      <button type="submit" id="send">Ask</button>
+    </form>
+  </section>
+
+  <section class="panel" aria-label="Results">
+    <nav class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="map" type="button">Map</button>
+      <button role="tab" aria-selected="false" data-tab="data" type="button">Data</button>
+      <button role="tab" aria-selected="false" data-tab="trace" type="button">Trace <span class="count" id="tracecount">0</span></button>
+    </nav>
+    <div class="tabpane" data-pane="map">
+      <div class="placeholder" id="mapempty">Maps you ask for appear here.</div>
+      <iframe id="map" title="Result map" hidden></iframe>
+      <div class="maplinks">
+        <a id="propng" target="_blank" rel="noopener" hidden>ArcGIS Pro layout</a>
+        <a id="propdf" target="_blank" rel="noopener" hidden>PDF</a>
+        <a id="mapopen" target="_blank" rel="noopener" hidden>Open in new tab</a>
+      </div>
+    </div>
+    <div class="tabpane" data-pane="data" hidden>
+      <div class="placeholder" id="dataempty">Tables from tool results appear here.</div>
+      <div id="data"></div>
+    </div>
+    <div class="tabpane" data-pane="trace" hidden>
+      <div class="placeholder" id="traceempty">Each tool the model calls is listed here, with its inputs and outcome.</div>
+      <ol id="trace" class="trace"></ol>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="login" role="dialog" aria-modal="true" aria-labelledby="logintitle">
+  <form class="card" id="loginform">
+    <span class="mark big" aria-hidden="true"></span>
+    <h2 id="logintitle">Sign in</h2>
+    <p class="muted">Identity provider: Keycloak (realm <code>geo</code>). Your role decides which tools the assistant may use for you.</p>
+    <label>Username <input id="username" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" id="loginerror" role="alert"></p>
+    <button type="submit">Sign in</button>
+    <p class="hint">Demo accounts: <code>analyst</code> (read + write) · <code>viewer</code> (read only)</p>
+  </form>
+</div>
+</body>
+</html>
