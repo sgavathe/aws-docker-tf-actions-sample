@@ -105,9 +105,9 @@ def render_dashboard(d: dict) -> str:
         for i, h in enumerate(d["hotspots"][:3])) or '<li class="muted">No intersection hot spots</li>'
     net = d.get("network") or {}
     crit = "".join(
-        f'<li><b>{zoom_link(d, c, str(c["location"])[:80])}</b><span>{c["crashes"]:,} crashes · through-traffic rank '
+        f'<li><b>{i + 1}. {zoom_link(d, c, str(c["location"])[:80])}</b><span>{c["crashes"]:,} crashes · through-traffic rank '
         f'{c["betweenness"]:.2f} · score {c["critical_and_dangerous"]:.2f}</span></li>'
-        for c in net.get("top", [])[:5]) or '<li class="muted">Too few connected intersections</li>'
+        for i, c in enumerate(net.get("top", [])[:5])) or '<li class="muted">Too few connected intersections</li>'
     pats = "".join(f"<li>{E(p)}</li>" for p in d["patterns"])
     recs = "".join(f'<li><b>{E(r["title"])}</b><div>{E(r["measures"])}</div><span>{E(r["why"])}</span></li>'
                    for r in d["recommendations"]) or '<li class="muted">No factor stands out against the statewide shares</li>'
@@ -146,8 +146,8 @@ def render_dashboard(d: dict) -> str:
   <div class="note">Points by severity; lines are road links between crash-coded intersections, thicker and redder where
   more shortest trips pass (schematic straight lines). Use the search box to find an address.</div></div>
  <div>
-  <div class="card"><h2>Accident hot spots (intersections) <span class="muted" style="font-weight:400">· click to zoom</span></h2><ol>{hot}</ol></div>
-  <div class="card" style="margin-top:12px"><h2>Critical and dangerous intersections</h2><ol>{crit}</ol>
+  <div class="card"><h2>Accident hot spots (intersections) <span class="muted" style="font-weight:400">· click to zoom</span></h2><ul>{hot}</ul></div>
+  <div class="card" style="margin-top:12px"><h2>Critical and dangerous intersections <span class="muted" style="font-weight:400">· click to zoom</span></h2><ul>{crit}</ul>
    <div class="note">Network of {net.get("nodes", 0):,} intersections and {net.get("links", 0):,} links built from VDOT
    node and milepost data. Through-traffic rank = share of shortest trips between intersections that pass through
    (betweenness, from {net.get("sampled_origins", 0):,} origins); score combines it with crash severity (EPDO).

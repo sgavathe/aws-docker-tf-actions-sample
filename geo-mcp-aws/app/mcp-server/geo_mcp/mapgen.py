@@ -79,6 +79,11 @@ def _render(title, layers, payload, legend, subtitle) -> str:
  #panel{{position:absolute;top:12px;left:12px;background:#fff;padding:10px 14px;border-radius:8px;
    box-shadow:0 1px 6px rgba(0,0,0,.25);max-width:320px}}
  #panel h1{{font-size:16px;margin:0 0 6px}}
+ #panel .ph{{display:flex;align-items:flex-start;gap:10px}} #panel .ph h1{{flex:1}}
+ #legbtn{{flex:none;font:12px system-ui,sans-serif;border:1px solid #d1d5db;background:#f9fafb;border-radius:6px;
+   padding:3px 8px;cursor:pointer;color:#374151}} #legbtn:hover{{background:#eef2ff}}
+ #panel.collapsed{{padding:7px 10px}} #panel.collapsed h1{{font-size:13px;margin:2px 0 0;white-space:nowrap;overflow:hidden;
+   text-overflow:ellipsis;max-width:220px}} #panel.collapsed #pbody{{display:none}}
  #panel span{{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px;vertical-align:middle}}
  .note{{color:#666;font-size:12px;margin-top:6px}}
  #search{{position:absolute;top:12px;right:52px;width:280px;background:#fff;border-radius:8px;
@@ -91,8 +96,10 @@ def _render(title, layers, payload, legend, subtitle) -> str:
    #panel{{max-width:calc(100% - 70px)}}}}
 </style></head>
 <body><div id="map"></div>
-<div id="panel"><h1>{html.escape(title)}</h1>{('<div class="note" style="margin:-4px 0 8px;font-weight:600">' + html.escape(subtitle) + "</div>") if subtitle else ""}{legend}
-<div class="note" id="basenote">Loading basemap…</div></div>
+<div id="panel"><div class="ph"><h1>{html.escape(title)}</h1><button id="legbtn" type="button" aria-expanded="true"
+  aria-controls="pbody">Hide legend</button></div>
+<div id="pbody">{('<div class="note" style="margin:-4px 0 8px;font-weight:600">' + html.escape(subtitle) + "</div>") if subtitle else ""}{legend}
+<div class="note" id="basenote">Loading basemap…</div></div></div>
 <script>
 const DATA = {payload};
 function circleRadius(l) {{
@@ -187,6 +194,19 @@ function addressSearch(map) {{
     }}
   }});
 }}
+// Legend: collapsed by default when this map is embedded (chat Map tab, dashboards), open in its own tab.
+(() => {{
+  const panel = document.getElementById('panel'), btn = document.getElementById('legbtn');
+  const set = (open) => {{
+    panel.classList.toggle('collapsed', !open);
+    btn.setAttribute('aria-expanded', String(open));
+    btn.textContent = open ? 'Hide legend' : 'Legend';
+  }};
+  let framed = true;
+  try {{ framed = window.self !== window.top; }} catch (e) {{ /* cross-origin parent: treat as framed */ }}
+  set(!framed && !location.hash.includes('zoom='));
+  btn.addEventListener('click', () => set(panel.classList.contains('collapsed')));
+}})();
 (async () => {{
 const [style, note] = await baseStyle();
 document.getElementById('basenote').textContent = note;
