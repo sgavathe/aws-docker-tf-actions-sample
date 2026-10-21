@@ -28,6 +28,7 @@ jobs Lambda (private subnets) ── crash loader: s3://…/import/ -> Aurora
 | MCP server | long-running container | Lambda, stateless HTTP (`MCP_STATELESS=1`) |
 | Maps / exports | nginx map viewer | private S3, served by the chat app to signed-in users only |
 | ArcGIS Pro | Pro MCP server on Windows | not deployed: exports come back as GeoJSON **download links** |
+| Address search on maps | none (no internet geocoder in the enclave) | Amazon Location Service via the chat app (`/api/geocode`, IAM, signed-in users only) |
 
 The app code in `app/` is the same as the enclave repo's, with these switches added.
 The tool behavior, roles, SQL guard and audit log are unchanged.
@@ -70,6 +71,7 @@ The tool behavior, roles, SQL guard and audit log are unchanged.
 | RDS-managed admin secret (the only Secrets Manager secret) | $0.40 |
 | Lambda, CloudFront, S3, DynamoDB on-demand, Cognito (≤10k MAU), CloudWatch (7-day logs) | ~$0 (free tiers) |
 | Bedrock | per token; cents per demo session |
+| Amazon Location (address search on maps) | per search; well under $1 at demo volume |
 | Route 53 zone (already exists for map.spatialenable.com) | $0 extra |
 
 There is no NAT gateway, ALB, interface endpoint, public IPv4 address or always-on compute.

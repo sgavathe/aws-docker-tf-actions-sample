@@ -124,6 +124,7 @@ resource "aws_lambda_function" "mcp" {
       MAPS_BUCKET                  = aws_s3_bucket.data.bucket
       MAP_VIEWER_URL               = "" # relative /maps/... links, served by the chat app on the same origin
       MAP_BASEMAP                  = var.map_basemap
+      MAP_GEOCODE_PATH             = "/api/geocode" # address search box on generated maps
       MCP_STATELESS                = "1"
       MCP_FORWARDED_AUTH           = "1"
       MCP_DNS_REBINDING_PROTECTION = "0" # IAM-only function URL; see server.py
@@ -260,6 +261,13 @@ resource "aws_iam_role_policy" "chat" {
         Effect   = "Allow"
         Action   = "s3:GetObject"
         Resource = "${aws_s3_bucket.data.arn}/maps/*"
+      },
+      {
+        # Address search on maps (Amazon Location Service, pay per request, no API key)
+        Sid      = "GeocodeAddresses"
+        Effect   = "Allow"
+        Action   = ["geo-places:Geocode", "geo-places:SearchText"]
+        Resource = "arn:${data.aws_partition.current.partition}:geo-places:${local.region}::provider/default"
       }
     ]
   })
@@ -288,6 +296,7 @@ resource "aws_lambda_function" "chat" {
       MCP_URL           = "${aws_lambda_function_url.mcp.function_url}mcp"
       MCP_AUTH_MODE     = "sigv4"
       MAX_STEPS         = "10"
+      GEOCODE_PROVIDER  = "amazon-location" # /api/geocode for the map search box
     }
   }
 

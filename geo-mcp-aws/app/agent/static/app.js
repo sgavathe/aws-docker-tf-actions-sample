@@ -83,7 +83,8 @@ document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("cli
 /* ---------- chat ---------- */
 function link(label, url) {
   const a = el("a", "", label);
-  const isMap = /^\/maps\/[\w.\-\/]+\.html$/.test(url) || (mapOrigin && url.startsWith(mapOrigin + "/maps/"));
+  const isMap = /^\/maps\/[\w.\-\/]+\.html$/.test(url) || (mapOrigin && url.startsWith(mapOrigin + "/maps/")) ||
+    url.startsWith(location.origin + "/maps/");
   a.href = url; a.rel = "noopener noreferrer";
   if (isMap) a.addEventListener("click", (e) => { e.preventDefault(); showMap(url); });
   else a.target = "_blank";

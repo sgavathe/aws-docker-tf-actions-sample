@@ -30,3 +30,9 @@ def test_map_footer_names_aurora_on_aws(monkeypatch):
     assert "Aurora PostgreSQL in AWS" in page and "enclave PostGIS" not in page
     monkeypatch.delenv("DB_IAM_AUTH")
     assert "the enclave PostGIS" in mapgen.render_map("t", [dict(layer)], basemap="osm")
+
+
+def test_node_as_number():
+    # Nova sends node=536154 (a number); the tools accept it like '536154'
+    _, p = build_where(None, dict(node=536154))
+    assert p["nodes"] == ["536154"]

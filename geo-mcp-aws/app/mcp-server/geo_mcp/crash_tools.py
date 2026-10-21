@@ -126,6 +126,8 @@ def scope(srv, f: dict) -> str:
         parts.append("ALL jurisdictions in the data (no area filter)")
     if f.get("year_from") or f.get("year_to"):
         parts.append(f"years {f.get('year_from') or 'start'}-{f.get('year_to') or 'latest'}")
+    else:
+        parts.append("ALL years in the data (no year filter; pass year_from for 'since <year>')")
     for k in ("severity", "collision", "route", "weather", "surface"):
         if f.get(k):
             parts.append(f"{k} {f[k] if not isinstance(f[k], list) else ','.join(f[k])}")
@@ -287,7 +289,7 @@ def register(mcp, srv) -> None:
     def crash_summary(year_from: int | None = None, year_to: int | None = None, severity: list[str] | str | None = None,
                       collision: str | None = None, route: str | None = None, juris: str | None = None,
                       night: bool | None = None, alcohol: bool | None = None, pedestrian: bool | None = None,
-                      place: str | None = None, radius_miles: float | None = None, node: str | None = None) -> dict:
+                      place: str | None = None, radius_miles: float | None = None, node: str | int | None = None) -> dict:
         """Overview of loaded crash data: totals, crashes by year and severity, top collision types,
         share at intersections, top routes. Call first for general crash questions.
         Filters (all optional): year_from, year_to, severity (e.g. ["K","A"]: K fatal, A serious,
@@ -343,6 +345,8 @@ def register(mcp, srv) -> None:
                           year_to: int | None = None) -> dict:
         """Find where two roads meet and count the crashes there. road_a/road_b: route numbers
         ('VA-156', 'Rt 630', 'US-460', '630') or street names ('Middle Road', 'Prince George Drive').
+        year_from: ALWAYS pass it when the question says 'since <year>' (e.g. year_from=2020).
+        The result also has crashes by year (by_year) for the returned intersections.
         juris narrows to a county/city. Returns candidate
         intersection nodes (the same pair can meet more than once) with crash counts; pass node to
         map_crashes or crash_profile for a map or details."""
@@ -369,17 +373,21 @@ def register(mcp, srv) -> None:
             raise ValueError(f"no crash-coded intersection of {la} and {lb}"
                              + (f" in {juris}" if juris else "") + " in the selected years. Check the names or "
                              "route numbers (street names come from the daily ArcGIS sync).")
+        by_year = {str(r["crash_year"]): int(r["crashes"]) for r in fetch(
+            f"SELECT crash_year, count(*) AS crashes FROM crash.crashes c WHERE "
+            f"{where.replace('crash_year', 'c.crash_year')} AND c.node = ANY(%(ids)s) "
+            f"GROUP BY crash_year ORDER BY crash_year", {**p, "ids": [str(r["node"]) for r in rows]})}
         ids = ",".join(str(r["node"]) for r in rows[:3])
         yrs = "".join(f", {k}={v}" for k, v in (("year_from", year_from), ("year_to", year_to)) if v)
         return {"scope": scope(srv, f), "road_a": la, "road_b": lb, "intersections": rows,
-                "total_crashes": sum(int(r["crashes"]) for r in rows),
+                "total_crashes": sum(int(r["crashes"]) for r in rows), "by_year": by_year,
                 "next": f"to map them call map_crashes(node='{ids}'{yrs}, style='points'); "
                         f"details: crash_profile(node='{rows[0]['node']}'{yrs}). "
                         "Pass year_from here too when the question names a start year."}
 
     @mcp.tool(annotations=RO)
     @audited(READER)
-    def crash_profile(node: str | None = None, route: str | None = None, place: str | None = None,
+    def crash_profile(node: str | int | None = None, route: str | None = None, place: str | None = None,
                       radius_miles: float | None = None, year_from: int | None = None,
                       year_to: int | None = None) -> dict:
         """Detailed profile of one location: give node (from crash_hotspots) or a route or place.
@@ -527,17 +535,30 @@ def register(mcp, srv) -> None:
         # points (default)
         return crash_layers(top, rank_by, f), "crash points by severity, top intersections sized by count"
 
-    def crash_layers(top: int, rank_by: str, f: dict, max_points: int = 20_000) -> list[dict]:
+    COLLISION_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+
+    def crash_layers(top: int, rank_by: str, f: dict, max_points: int = 20_000,
+                     color_by: str = "severity") -> list[dict]:
         where, p = build_where(srv, f)
         p["cap"] = max_points
-        def pts(name, color, sev):
+        def pts(name, color, cond, extra):
             sql = (f"SELECT document_nbr, crash_dt, severity, collision_type, route_label, geom FROM crash.crashes "
-                   f"WHERE {where} AND severity = ANY(%(s)s) LIMIT %(cap)s")
-            rows = fetch(f"SELECT ST_AsGeoJSON(t.*)::json AS f FROM ({sql}) t", {**p, "s": sev})
+                   f"WHERE {where} AND {cond} LIMIT %(cap)s")
+            rows = fetch(f"SELECT ST_AsGeoJSON(t.*)::json AS f FROM ({sql}) t", {**p, **extra})
             return {"name": name, "color": color, "radius": 4,
                     "geojson": {"type": "FeatureCollection", "features": [r["f"] for r in rows]}}
-        layers = [pts("Property damage only", "#9aa5b1", ["O"]), pts("Injury (B, C)", "#ff9f1c", ["B", "C"]),
-                  pts("Fatal or serious (K, A)", "#d62728", ["K", "A"])]
+        if color_by == "collision":
+            kinds = [r["t"] for r in fetch(
+                f"SELECT collision_type AS t, count(*) AS n FROM crash.crashes WHERE {where} "
+                f"AND coalesce(collision_type, '') NOT IN ('', 'Not Provided') GROUP BY 1 ORDER BY n DESC LIMIT 6", p)]
+            layers = [pts(re.sub(r"^\s*\d+\.\s*", "", k), COLLISION_COLORS[i], "collision_type = %(ct)s", {"ct": k})
+                      for i, k in enumerate(kinds)]
+            layers.append(pts("Other / not provided", "#b0b7bf",
+                              "NOT (coalesce(collision_type, '') = ANY(%(cts)s))", {"cts": kinds}))
+        else:
+            layers = [pts("Property damage only", "#9aa5b1", "severity = ANY(%(s)s)", {"s": ["O"]}),
+                      pts("Injury (B, C)", "#ff9f1c", "severity = ANY(%(s)s)", {"s": ["B", "C"]}),
+                      pts("Fatal or serious (K, A)", "#d62728", "severity = ANY(%(s)s)", {"s": ["K", "A"]})]
         hs = hotspots(top, rank_by, "intersection", 60, f)
         layers.append({"name": f"Top {len(hs)} intersections", "color": "#3b1f8f", "size_field": "crashes",
                        "geojson": {"type": "FeatureCollection", "features": [
@@ -554,10 +575,11 @@ def register(mcp, srv) -> None:
                     year_from: int | None = None, year_to: int | None = None, severity: list[str] | str | None = None,
                     collision: str | None = None, route: str | None = None, juris: str | None = None,
                     night: bool | None = None, place: str | None = None, radius_miles: float | None = None,
-                    node: str | None = None) -> dict:
+                    node: str | int | None = None, color_by: str = "severity") -> dict:
         """Web map of crashes. node: one intersection node (from find_intersection or crash_hotspots),
-        or several comma-separated. style:
-        - 'points': crashes colored by severity + top intersections sized by count (best for a county or less)
+        or several comma-separated. color_by (points style): 'severity' (default) or 'collision'
+        (top 6 collision types, e.g. rear end, angle, each its own color) for 'what type of crashes'. style:
+        - 'points': crashes colored by severity (or collision type) + top intersections sized by count (best for a county or less)
         - 'heatmap': crash density heat map (scales to statewide)
         - 'grid': crashes counted per square cell, shaded low to high
         - 'hotspots': statistically significant hot and cold spots (Getis-Ord Gi*)
@@ -569,7 +591,12 @@ def register(mcp, srv) -> None:
             raise ValueError(f"style must be one of {STYLES}")
         f = filters(year_from=year_from, year_to=year_to, severity=severity, collision=collision, route=route,
                     juris=juris, night=night, place=place, radius_miles=radius_miles, node=node)
-        layers, note = style_layers(style, top, rank_by, f, cell_m, weight_by)
+        if color_by not in ("severity", "collision"):
+            raise ValueError("color_by must be 'severity' or 'collision'")
+        if style == "points" and color_by == "collision":
+            layers, note = crash_layers(top, rank_by, f, color_by="collision"), "points colored by collision type"
+        else:
+            layers, note = style_layers(style, top, rank_by, f, cell_m, weight_by)
         if not any(l["geojson"]["features"] for l in layers):
             raise ValueError("no crashes matched the filters (or none formed a cluster); widen the area or filters")
         sc = scope(srv, f)

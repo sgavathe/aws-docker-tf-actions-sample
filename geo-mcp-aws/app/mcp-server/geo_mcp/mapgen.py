@@ -42,7 +42,9 @@ def render_map(title: str, layers: list[dict], basemap: str = "offline", subtitl
     OpenStreetMap tiles) | none."""
     for i, lyr in enumerate(layers):
         lyr.setdefault("color", PALETTE[i % len(PALETTE)])
-    payload = json.dumps({"layers": layers, "bounds": _bounds(layers), "basemap": basemap})
+    geocode = os.environ.get("MAP_GEOCODE_PATH", "")
+    geocode = geocode if re.fullmatch(r"/[\w/-]{1,60}", geocode) else ""   # same-origin path only
+    payload = json.dumps({"layers": layers, "bounds": _bounds(layers), "basemap": basemap, "geocode": geocode})
     def swatch(l):
         if l.get("kind") == "heatmap":
             return '<span style="width:28px;border-radius:3px;background:linear-gradient(90deg,#fde68a,#f97316,#b91c1c)"></span>'
@@ -79,6 +81,12 @@ def _render(title, layers, payload, legend, subtitle) -> str:
  #panel h1{{font-size:16px;margin:0 0 6px}}
  #panel span{{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px;vertical-align:middle}}
  .note{{color:#666;font-size:12px;margin-top:6px}}
+ #search{{position:absolute;top:12px;right:52px;width:280px;background:#fff;border-radius:8px;
+   box-shadow:0 1px 6px rgba(0,0,0,.25);font-size:13px}}
+ #search input{{box-sizing:border-box;width:100%;border:0;padding:9px 12px;border-radius:8px;font:inherit}}
+ #search ul{{list-style:none;margin:0;padding:0;border-top:1px solid #e5e7eb}}
+ #search li{{padding:7px 12px;cursor:pointer}} #search li:hover{{background:#f3f4f6}}
+ #search .msg{{padding:7px 12px;color:#666}}
 </style></head>
 <body><div id="map"></div>
 <div id="panel"><h1>{html.escape(title)}</h1>{('<div class="note" style="margin:-4px 0 8px;font-weight:600">' + html.escape(subtitle) + "</div>") if subtitle else ""}{legend}
@@ -128,6 +136,54 @@ async function baseStyle() {{
   }}
   return [BLANK, 'No basemap: all data from the enclave PostGIS.'];
 }}
+// Address search: same-origin POST to the chat app (signed-in users only), which asks the
+// geocoder server-side. Results are inserted as text nodes, never HTML.
+function addressSearch(map) {{
+  const box = document.createElement('div'); box.id = 'search';
+  const form = document.createElement('form');
+  const input = document.createElement('input');
+  input.type = 'search'; input.placeholder = 'Search an address or place'; input.maxLength = 200;
+  input.setAttribute('aria-label', 'Search an address or place');
+  const list = document.createElement('ul');
+  form.append(input); box.append(form, list); document.body.append(box);
+  let marker = null;
+  const show = (r) => {{
+    list.replaceChildren();
+    if (marker) marker.remove();
+    marker = new maplibregl.Marker({{color: '#111827'}}).setLngLat([r.lon, r.lat])
+      .setPopup(new maplibregl.Popup({{offset: 24}}).setText(r.label)).addTo(map);
+    marker.togglePopup();
+    map.flyTo({{center: [r.lon, r.lat], zoom: Math.max(map.getZoom(), 16)}});
+  }};
+  form.addEventListener('submit', async (e) => {{
+    e.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    const c = map.getCenter();
+    const body = JSON.stringify({{q: q, lon: c.lng, lat: c.lat}});
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body))))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    list.replaceChildren(Object.assign(document.createElement('li'), {{className: 'msg', textContent: 'Searching…'}}));
+    try {{
+      const r = await fetch(DATA.geocode, {{method: 'POST', credentials: 'same-origin', body: body,
+        headers: {{'Content-Type': 'application/json', 'x-amz-content-sha256': hash}}}});
+      const data = r.ok ? await r.json() : {{results: []}};
+      list.replaceChildren();
+      if (!data.results.length) {{
+        list.append(Object.assign(document.createElement('li'), {{className: 'msg',
+          textContent: r.status === 401 ? 'Sign in again to search' : 'No match'}}));
+        return;
+      }}
+      if (data.results.length === 1) return show(data.results[0]);
+      data.results.forEach((res) => {{
+        const li = document.createElement('li'); li.textContent = res.label;
+        li.addEventListener('click', () => show(res)); list.append(li);
+      }});
+    }} catch (err) {{
+      list.replaceChildren(Object.assign(document.createElement('li'), {{className: 'msg', textContent: 'Search failed'}}));
+    }}
+  }});
+}}
 (async () => {{
 const [style, note] = await baseStyle();
 document.getElementById('basenote').textContent = note;
@@ -137,6 +193,7 @@ const map = new maplibregl.Map({{
   center: [-77.45, 37.55], zoom: 10
 }});
 map.addControl(new maplibregl.NavigationControl());
+if (DATA.geocode) addressSearch(map);
 map.on('load', () => {{
   const popup = (layerId) => map.on('click', layerId, e => {{
     const p = e.features[0].properties;

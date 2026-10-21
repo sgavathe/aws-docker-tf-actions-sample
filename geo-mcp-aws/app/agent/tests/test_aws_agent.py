@@ -213,3 +213,42 @@ def test_map_pages_send_origin_referrer(aws_app):
     c.post("/api/login", json={"username": "analyst", "password": "Str0ng!Passw0rd"})
     assert c.get("/maps/crash-1.html").headers["referrer-policy"] == "strict-origin-when-cross-origin"
     assert c.get("/api/me").headers["referrer-policy"] == "no-referrer"
+
+
+def test_geocode_signed_in_only_and_server_side(aws_app, monkeypatch):
+    c, chat_app = aws_app
+    monkeypatch.setattr(chat_app, "GEOCODE_PROVIDER", "amazon-location")
+    calls = []
+
+    class Places:
+        def geocode(self, **kw):
+            calls.append(("geocode", kw))
+            return {"ResultItems": []}
+
+        def search_text(self, **kw):
+            calls.append(("search_text", kw))
+            return {"ResultItems": [{"Title": "Middle Rd", "Position": [-77.28, 37.26],
+                                     "Address": {"Label": "Middle Rd, Prince George, VA"}}]}
+
+    monkeypatch.setattr(chat_app, "_places", Places())
+    q = {"q": "Middle Rd Prince George VA", "lon": -77.3, "lat": 37.2}
+    assert c.post("/api/geocode", json=q).status_code == 401                    # signed-out
+    c.post("/api/login", json={"username": "analyst", "password": "Str0ng!Passw0rd"})
+    assert c.post("/api/geocode", content="q=x").status_code in (415, 422)     # non-JSON rejected (CSRF)
+    assert c.post("/api/geocode", json={"q": "x" * 201}).status_code == 422
+    r = c.post("/api/geocode", json=q)
+    assert r.json() == {"results": [{"label": "Middle Rd, Prince George, VA", "lon": -77.28, "lat": 37.26}]}
+    assert calls[0] == ("geocode", {"QueryText": q["q"], "MaxResults": 5, "BiasPosition": [-77.3, 37.2],
+                                    "Filter": {"IncludeCountries": ["USA"]}})
+    assert calls[1][0] == "search_text"                                       # fallback for landmarks
+
+
+def test_invented_map_links_are_removed():
+    import agent
+    made = {"/maps/crash-analysis-1.html"}
+    text = ("Real: [a](/maps/crash-analysis-1.html). Fake: [b](https://mcp.example.com/maps/crash-analysis-9.html) "
+            "and /maps/crash-analysis-7.html")
+    out = agent.checked_links(text, made)
+    assert "[a](/maps/crash-analysis-1.html)" in out
+    assert "crash-analysis-9" not in out and "crash-analysis-7" not in out
+    assert out.count("no map was made") == 2

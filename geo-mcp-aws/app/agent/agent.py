@@ -63,7 +63,11 @@ SYSTEM = (
     "no other tool fits. If a tool returns an error, read it and fix your call; never drop an area "
     "filter the user asked for. Crash results include 'scope': state it in your answer, and if it says "
     "ALL jurisdictions when the user asked about a county or city, say the filter was not applied. Always "
-    "state the numbers (totals, and by severity for crashes) in the answer before any map link. Give the "
+    "state the numbers (totals, and by severity for crashes) in the answer before any map link. Every "
+    "number must come from a successful tool result in THIS turn: if a tool failed, fix the call or say "
+    "you could not get the number; never reuse numbers from an earlier answer for different years or "
+    "filters. Only link a map that map_crashes or make_web_map returned this turn. 'What type of "
+    "crashes' questions: crash_summary for the counts, then map_crashes(color_by='collision'). Give the "
     "map URL as plain text. Be concise and give the reasons."
 )
 
@@ -121,6 +125,19 @@ async def tool_catalog(sessions: dict[str, ClientSession]):
             tools.append({"type": "function", "function": {
                 "name": t.name, "description": t.description or "", "parameters": t.input_schema}})
     return routes, tools
+
+
+MAP_PATH = re.compile(r"/maps/[\w.\-/]+")
+_MAP_LINK = re.compile(r"\[([^\]\n]{0,200})\]\(((?:https?://[^\s)/]+)?/maps/[\w.\-/]+)\)|(?:https?://[^\s)/\]]+)?/maps/[\w.\-/]+")
+
+
+def checked_links(text: str, made: set[str]) -> str:
+    """Drop map links the model wrote itself: only /maps/ paths a tool returned this turn survive."""
+    def repl(m):
+        url = m.group(2) if m.group(2) else m.group(0)
+        path = MAP_PATH.search(url).group(0)
+        return m.group(0) if path in made else "(no map was made for this; ask me to map it)"
+    return _MAP_LINK.sub(repl, text or "")
 
 
 def describe(exc: BaseException) -> str:
@@ -289,6 +306,7 @@ class SigV4Lambda(httpx2.Auth):
 async def agent_events(token: str, messages: list[dict]):
     """Run one user turn. `messages` holds the conversation (without the system prompt) and is
     extended in place. Yields events: start, tool_call, tool_result, answer."""
+    made: set[str] = set()   # /maps/... paths the tools returned this turn
     async with AsyncExitStack() as stack:
         sessions = await open_servers(stack, token)
         routes, tools = await tool_catalog(sessions)
@@ -300,7 +318,7 @@ async def agent_events(token: str, messages: list[dict]):
             messages.append(msg)
             calls = msg.get("tool_calls") or []
             if not calls:
-                yield {"type": "answer", "content": msg.get("content", "")}
+                yield {"type": "answer", "content": checked_links(msg.get("content", ""), made)}
                 return
             for call in calls:
                 fn = call["function"]
@@ -319,6 +337,7 @@ async def agent_events(token: str, messages: list[dict]):
                     except Exception as exc:   # transport failure: tell the model, keep the turn going
                         print(f"[agent] {fn['name']} failed: {describe(exc)}", file=sys.stderr)
                         out, is_error, data = f"ERROR: the {fn['name']} call failed ({describe(exc)}); try again or simplify", True, None
+                made.update(MAP_PATH.findall(out))
                 yield {"type": "tool_result", "tool": fn["name"], "is_error": is_error,
                        "data": data, "text": None if data is not None else out[:4000]}
                 messages.append({"role": "tool", "tool_name": fn["name"], "tool_call_id": call["id"], "content": out})

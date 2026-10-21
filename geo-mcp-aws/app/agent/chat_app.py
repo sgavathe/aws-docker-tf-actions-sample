@@ -316,6 +316,54 @@ async def ask(body: Ask, request: Request):
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
+# ---------------------------------------------------------------- address search (AWS)
+# The map pages' search box posts here; the geocoder is called server-side with the function's IAM
+# role (Amazon Location Service), so the browser needs no key and no extra origin in the CSP.
+
+GEOCODE_PROVIDER = os.environ.get("GEOCODE_PROVIDER", "")
+_places = None
+
+
+class Geo(BaseModel):
+    q: str = Field(min_length=2, max_length=200)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+
+
+def _place_rows(items: list[dict]) -> list[dict]:
+    out = []
+    for i in items or []:
+        pos = i.get("Position") or []
+        if len(pos) == 2:
+            out.append({"label": (i.get("Address") or {}).get("Label") or i.get("Title") or "",
+                        "lon": float(pos[0]), "lat": float(pos[1])})
+    return out
+
+
+@app.post("/api/geocode")
+async def geocode(body: Geo, request: Request):
+    _require_json(request)
+    _session(request)
+    if GEOCODE_PROVIDER != "amazon-location":
+        raise HTTPException(404)
+    global _places
+    if _places is None:
+        import boto3
+        _places = boto3.client("geo-places")
+    bias = [body.lon, body.lat] if body.lon is not None and body.lat is not None else [-77.43, 37.54]
+    try:
+        r = await asyncio.to_thread(_places.geocode, QueryText=body.q, MaxResults=5, BiasPosition=bias,
+                                    Filter={"IncludeCountries": ["USA"]})
+        rows = _place_rows(r.get("ResultItems"))
+        if not rows:   # landmarks and business names: free-text search near the map
+            r = await asyncio.to_thread(_places.search_text, QueryText=body.q, MaxResults=5, BiasPosition=bias)
+            rows = _place_rows(r.get("ResultItems"))
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        raise HTTPException(502, "Address search is unavailable")
+    return {"results": rows}
+
+
 # ---------------------------------------------------------------- maps and exports (AWS)
 # Locally the map-viewer nginx serves these. In AWS they live in a private bucket and are served
 # here, so only signed-in users can open a map or download an export.
