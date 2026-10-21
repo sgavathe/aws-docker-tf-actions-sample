@@ -87,6 +87,8 @@ def _render(title, layers, payload, legend, subtitle) -> str:
  #search ul{{list-style:none;margin:0;padding:0;border-top:1px solid #e5e7eb}}
  #search li{{padding:7px 12px;cursor:pointer}} #search li:hover{{background:#f3f4f6}}
  #search .msg{{padding:7px 12px;color:#666}}
+ @media (max-width:760px){{#search{{top:auto;right:auto;bottom:30px;left:12px;width:min(280px,calc(100% - 24px))}}
+   #panel{{max-width:calc(100% - 70px)}}}}
 </style></head>
 <body><div id="map"></div>
 <div id="panel"><h1>{html.escape(title)}</h1>{('<div class="note" style="margin:-4px 0 8px;font-weight:600">' + html.escape(subtitle) + "</div>") if subtitle else ""}{legend}

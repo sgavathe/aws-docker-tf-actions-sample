@@ -39,6 +39,13 @@ def build_where(srv, f: dict) -> tuple[str, dict]:
         if bad:
             raise ValueError(f"severity must be from {SEV_ORDER} (K fatal, A serious, B minor, C possible, O PDO)")
         clauses.append("severity = ANY(%(severity)s)"); p["severity"] = list(sev)
+    if f.get("radius_miles") is not None and float(f["radius_miles"]) <= 0:
+        f = {**f, "radius_miles": None}   # models send 0 for "no radius"
+    if f.get("place") and f.get("juris"):
+        try:
+            srv.resolve_place(f["place"])           # a landmark inside the county: keep both
+        except ValueError:                           # the county's name again, or unknown: juris is the area
+            f = {**f, "place": None}
     if f.get("place") and not f.get("juris"):
         try:
             srv.resolve_place(f["place"])
@@ -82,6 +89,7 @@ def build_where(srv, f: dict) -> tuple[str, dict]:
 
 
 _JURIS: list[str] = []
+_JURIS_AT = 0.0
 
 
 def _plain(name: str) -> str:
@@ -91,24 +99,38 @@ def _plain(name: str) -> str:
     return re.sub(r"[^a-z]+", " ", n).strip()
 
 
+def _kind(name: str) -> str:
+    n = name.lower()
+    return "city" if re.search(r"\bcity\b", n) else "town" if re.search(r"\btown\b", n) else \
+        "county" if re.search(r"\bcounty\b", n) else ""
+
+
 def resolve_juris(srv, text: str) -> list[str]:
     """Jurisdiction names in the data that match free text, tolerating case, numbering, the words
-    County/City, and typos ('prince grorge' -> '074. Prince George County')."""
-    global _JURIS
-    if not _JURIS:
+    County/City, and typos ('prince grorge' -> '074. Prince George County'). When the text names
+    the kind (county / city / town) that wins; when two different places still match ('Richmond':
+    the city and the county), it raises instead of merging them."""
+    global _JURIS, _JURIS_AT
+    if not _JURIS or time.time() - _JURIS_AT > 3600:   # refresh: the daily sync can change the names
         _JURIS = [r["juris"] for r in srv.fetch("SELECT DISTINCT juris FROM crash.crashes WHERE juris IS NOT NULL")]
+        _JURIS_AT = time.time()
     want = _plain(text)
     if not want:
         return []
     plain = {j: _plain(j) for j in _JURIS}
-    exact = [j for j, n in plain.items() if n == want]
-    if exact:
-        return exact
-    sub = [j for j, n in plain.items() if want in n]
-    if sub:
-        return sub
-    close = difflib.get_close_matches(want, list(plain.values()), n=1, cutoff=0.75)
-    return [j for j, n in plain.items() if close and n == close[0]]
+    hits = [j for j, n in plain.items() if n == want] or [j for j, n in plain.items() if want in n]
+    if not hits:
+        close = difflib.get_close_matches(want, list(plain.values()), n=1, cutoff=0.75)
+        hits = [j for j, n in plain.items() if close and n == close[0]]
+    kind = _kind(text)
+    if kind and any(_kind(j) == kind for j in hits):
+        hits = [j for j in hits if _kind(j) == kind]
+    places = {(plain[j], _kind(j)) for j in hits}
+    if len(places) > 1:
+        options = sorted({re.sub(r"^\s*\d+\.?\s*", "", j) for j in hits})[:8]
+        raise ValueError(f"{text!r} matches more than one jurisdiction: {', '.join(options)}. "
+                         "Pass the full name (e.g. juris='City of Richmond' or juris='Richmond County')")
+    return hits
 
 
 def scope(srv, f: dict) -> str:
