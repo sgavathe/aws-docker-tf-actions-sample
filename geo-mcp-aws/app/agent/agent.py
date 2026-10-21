@@ -121,6 +121,16 @@ async def tool_catalog(sessions: dict[str, ClientSession]):
     return routes, tools
 
 
+def describe(exc: BaseException) -> str:
+    """Innermost exception as 'Type: message' (unwraps anyio ExceptionGroups; AWS errors show their code)."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    code = getattr(exc, "response", None)
+    if isinstance(code, dict) and code.get("Error", {}).get("Code"):
+        return f"{code['Error']['Code']}: {code['Error'].get('Message', '')[:300]}"
+    return f"{type(exc).__name__}: {str(exc)[:300]}"
+
+
 def result_text(res) -> str:
     parts = [c.text for c in res.content if getattr(c, "type", "") == "text"]
     text = "\n".join(parts) or json.dumps(res.structured_content or {})
@@ -172,8 +182,9 @@ def to_bedrock(messages: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         if role == "tool":
             text = str(m.get("content", ""))
-            block = {"toolResult": {"toolUseId": m.get("tool_call_id", ""), "content": [{"text": text or "(empty)"}],
-                                    "status": "error" if text.startswith("ERROR") else "success"}}
+            block = {"toolResult": {"toolUseId": m.get("tool_call_id", ""), "content": [{"text": text or "(empty)"}]}}
+            if "anthropic" in BEDROCK_MODEL_ID:   # Converse accepts "status" only for Claude; Nova rejects it
+                block["toolResult"]["status"] = "error" if text.startswith("ERROR") else "success"
             role, blocks = "user", [block]
         elif role == "assistant":
             blocks = [{"text": m["content"]}] if m.get("content") else []
@@ -299,9 +310,13 @@ async def agent_events(token: str, messages: list[dict]):
                 if session is None:
                     out, is_error, data = f"ERROR: unknown tool {fn['name']}", True, None
                 else:
-                    res = await session.call_tool(fn["name"], args)
-                    out, is_error = result_text(res), bool(res.is_error)
-                    data = None if is_error else result_data(res)
+                    try:
+                        res = await session.call_tool(fn["name"], args)
+                        out, is_error = result_text(res), bool(res.is_error)
+                        data = None if is_error else result_data(res)
+                    except Exception as exc:   # transport failure: tell the model, keep the turn going
+                        print(f"[agent] {fn['name']} failed: {describe(exc)}", file=sys.stderr)
+                        out, is_error, data = f"ERROR: the {fn['name']} call failed ({describe(exc)}); try again or simplify", True, None
                 yield {"type": "tool_result", "tool": fn["name"], "is_error": is_error,
                        "data": data, "text": None if data is not None else out[:4000]}
                 messages.append({"role": "tool", "tool_name": fn["name"], "tool_call_id": call["id"], "content": out})

@@ -37,7 +37,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from agent import agent_events
+import sys
+import traceback
+
+from agent import agent_events, describe
 
 AUTH_PROVIDER = os.environ.get("AUTH_PROVIDER", "keycloak")
 TOKEN_URL = os.environ.get("KEYCLOAK_TOKEN_URL", "")
@@ -271,8 +274,10 @@ async def _with_pings(events, every: float = 15.0):
         try:
             async for ev in events:
                 await q.put(ev)
-        except Exception as exc:  # report, don't leak internals
-            await q.put({"type": "error", "message": f"{type(exc).__name__}: the request failed"})
+        except Exception as exc:  # full traceback to the log; the user sees the error type only
+            traceback.print_exc(file=sys.stderr)
+            kind = describe(exc).split(":", 1)[0]
+            await q.put({"type": "error", "message": f"{kind}: the request failed (details in the chat function's log)"})
         finally:
             await q.put(done)
 

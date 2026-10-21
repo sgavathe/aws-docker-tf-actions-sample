@@ -61,6 +61,10 @@ def build_where(srv, f: dict) -> tuple[str, dict]:
             clauses.append(f"{key} = %({key})s"); p[key] = bool(f[key])
     if f.get("node"):
         nodes = f["node"] if isinstance(f["node"], list) else [n.strip() for n in str(f["node"]).split(",") if n.strip()]
+        bad = [n for n in nodes if not str(n).isdigit()]
+        if bad:
+            raise ValueError(f"node must be the numeric NODE id from find_intersection or crash_hotspots "
+                             f"(e.g. node='536154'), not {bad[0]!r}")
         clauses.append("node = ANY(%(nodes)s)"); p["nodes"] = [str(n) for n in nodes]
     if f.get("intersection_only"):
         clauses.append("node IS NOT NULL")
@@ -361,8 +365,13 @@ def register(mcp, srv) -> None:
             raise ValueError(f"no crash-coded intersection of {la} and {lb}"
                              + (f" in {juris}" if juris else "") + " in the selected years. Check the names or "
                              "route numbers (street names come from the daily ArcGIS sync).")
+        ids = ",".join(str(r["node"]) for r in rows[:3])
+        yrs = "".join(f", {k}={v}" for k, v in (("year_from", year_from), ("year_to", year_to)) if v)
         return {"scope": scope(srv, f), "road_a": la, "road_b": lb, "intersections": rows,
-                "next": "map_crashes(node=<node>, same years) to map them; crash_profile(node=...) for details"}
+                "total_crashes": sum(int(r["crashes"]) for r in rows),
+                "next": f"to map them call map_crashes(node='{ids}'{yrs}, style='points'); "
+                        f"details: crash_profile(node='{rows[0]['node']}'{yrs}). "
+                        "Pass year_from here too when the question names a start year."}
 
     @mcp.tool(annotations=RO)
     @audited(READER)
@@ -375,7 +384,9 @@ def register(mcp, srv) -> None:
         f = filters(route=route, place=place, radius_miles=radius_miles, year_from=year_from, year_to=year_to)
         where, p = build_where(srv, f)
         if node:
-            where += " AND node = %(node)s"; p["node"] = str(node)
+            if not str(node).strip().isdigit():
+                raise ValueError(f"node must be one numeric NODE id from find_intersection (e.g. '536154'), not {node!r}")
+            where += " AND node = %(node)s"; p["node"] = str(node).strip()
         if not (node or f):
             raise ValueError("give node, route or place")
         base = f"FROM crash.crashes WHERE {where}"

@@ -41,7 +41,26 @@ def test_to_bedrock_pairs_tool_results_and_merges_turns():
     uses = [b["toolUse"]["toolUseId"] for b in msgs[1]["content"] if "toolUse" in b]
     results = [b["toolResult"] for b in msgs[2]["content"] if "toolResult" in b]
     assert uses == ["c1", "c2"] and [r["toolUseId"] for r in results] == ["c1", "c2"]
-    assert results[1]["status"] == "error" and msgs[2]["content"][-1] == {"text": "try Richmond"}
+    assert msgs[2]["content"][-1] == {"text": "try Richmond"}
+    assert all("status" not in r for r in results)          # Nova (default) rejects toolResult.status
+
+
+def test_tool_result_status_only_for_claude(monkeypatch):
+    import agent
+    hist = [{"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": {}}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ERROR: bad"}]
+    monkeypatch.setattr(agent, "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-5-5")
+    _, msgs = agent.to_bedrock(hist)
+    assert msgs[2]["content"][0]["toolResult"]["status"] == "error"
+
+
+def test_describe_unwraps_exception_groups():
+    import agent
+    from botocore.exceptions import ClientError
+    err = ClientError({"Error": {"Code": "ValidationException", "Message": "bad field"}}, "Converse")
+    assert agent.describe(ExceptionGroup("outer", [ExceptionGroup("inner", [err])])) == "ValidationException: bad field"
+    assert agent.describe(RuntimeError("x")) == "RuntimeError: x"
 
 
 def test_bedrock_chat_parses_tool_use(monkeypatch):
