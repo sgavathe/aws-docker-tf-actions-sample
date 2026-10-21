@@ -81,12 +81,26 @@ function showTab(name) {
 document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
 /* ---------- chat ---------- */
+function link(label, url) {
+  const a = el("a", "", label);
+  const isMap = /^\/maps\/[\w.\-\/]+\.html$/.test(url) || (mapOrigin && url.startsWith(mapOrigin + "/maps/"));
+  a.href = url; a.rel = "noopener noreferrer";
+  if (isMap) a.addEventListener("click", (e) => { e.preventDefault(); showMap(url); });
+  else a.target = "_blank";
+  return a;
+}
 function addMsg(cls, text) {
   $("empty").hidden = true;
   const m = el("div", "msg " + cls);
-  // light formatting: **bold** only, built as nodes
-  String(text).split(/(\*\*[^*]+\*\*)/g).forEach((part) => {
-    if (/^\*\*[^*]+\*\*$/.test(part)) m.append(el("strong", "", part.slice(2, -2)));
+  // light formatting, built as nodes: **bold**, [label](url) and bare links. Only same-site /maps/
+  // paths and https URLs become links; map links open in the Map tab.
+  const TOKEN = /(\*\*[^*]+\*\*|\[[^\]\n]{1,200}\]\((?:\/maps\/[\w.\-\/]+|https:\/\/[^\s)]+)\)|(?:^|(?<=\s))\/maps\/[\w.\-\/]+\.html|https:\/\/[^\s)\]]*[^\s)\].,;:!?'"])/g;
+  String(text).split(TOKEN).forEach((part) => {
+    if (!part) return;
+    if (/^\*\*[^*]+\*\*$/.test(part)) { m.append(el("strong", "", part.slice(2, -2))); return; }
+    const md = part.match(/^\[([^\]]+)\]\((.+)\)$/);
+    const url = md ? md[2] : part;
+    if (md || /^(\/maps\/|https:\/\/)/.test(part)) m.append(link(md ? md[1] : part, url));
     else m.append(document.createTextNode(part));
   });
   $("log").append(m); m.scrollIntoView({ block: "end" });

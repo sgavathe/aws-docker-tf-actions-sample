@@ -49,9 +49,10 @@ SYSTEM = (
     "overviews; crash_hotspots for worst/most-crash intersections (rank_by='severity' for most "
     "dangerous; pass filters like year_from, severity ['K','A'], collision 'angle', route 'US-460', "
     "juris 'Prince George' for a county or city (typos are tolerated), "
-    "night true); find_intersection(road_a, road_b, juris) for 'crashes at X and Y' (street names like "
-    "'Middle Road' or route numbers like 'VA-156'/'Rt 630'; if a name is not found, ask for the route "
-    "number), then map_crashes(node=...) to map that intersection; "
+    "night true); find_intersection(road_a, road_b, juris, year_from) for 'crashes at X and Y' (street "
+    "names like 'Middle Road' or route numbers like 'VA-156'/'Rt 630'; if a name is not found, ask for "
+    "the route number): its total_crashes and K/A/B/C/O columns ARE the answer; then "
+    "map_crashes(node='<NODE number from its result>', same years) to map it, never node='intersection'; "
     "crash_profile(node) to explain one location; worst_segments for road stretches; "
     "map_crashes for a crash web map, with style: 'heatmap' for heat/density maps, 'hotspots' for hot "
     "spot / statistically significant / Gi* maps, 'clusters' for cluster maps, 'grid' for crash counts "
@@ -61,8 +62,9 @@ SYSTEM = (
     "layers=pro_layers unchanged. Use query_features only when "
     "no other tool fits. If a tool returns an error, read it and fix your call; never drop an area "
     "filter the user asked for. Crash results include 'scope': state it in your answer, and if it says "
-    "ALL jurisdictions when the user asked about a county or city, say the filter was not applied. Give the map URL as "
-    "plain text. Be concise and give the reasons."
+    "ALL jurisdictions when the user asked about a county or city, say the filter was not applied. Always "
+    "state the numbers (totals, and by severity for crashes) in the answer before any map link. Give the "
+    "map URL as plain text. Be concise and give the reasons."
 )
 
 NO_PRO = (

@@ -44,6 +44,9 @@ def build_where(srv, f: dict) -> tuple[str, dict]:
             srv.resolve_place(f["place"])
         except ValueError:   # not a gazetteer point: treat it as a county/city name ("Prince George County")
             if not resolve_juris(srv, f["place"]):
+                if re.search(r"\s(and|&|at)\s|/", f["place"], re.I):
+                    raise ValueError(f"{f['place']!r} looks like two roads: call find_intersection(road_a, road_b) "
+                                     "and pass its NODE id as node='...' instead of place")
                 raise ValueError(f"{f['place']!r} is neither a known place nor a jurisdiction in the crash data. "
                                  f"For a county or city use juris='Henrico'; known places: Richmond, RIC airport, West End")
             f = {**f, "juris": f["place"], "place": None}
@@ -284,17 +287,18 @@ def register(mcp, srv) -> None:
     def crash_summary(year_from: int | None = None, year_to: int | None = None, severity: list[str] | str | None = None,
                       collision: str | None = None, route: str | None = None, juris: str | None = None,
                       night: bool | None = None, alcohol: bool | None = None, pedestrian: bool | None = None,
-                      place: str | None = None, radius_miles: float | None = None) -> dict:
+                      place: str | None = None, radius_miles: float | None = None, node: str | None = None) -> dict:
         """Overview of loaded crash data: totals, crashes by year and severity, top collision types,
         share at intersections, top routes. Call first for general crash questions.
         Filters (all optional): year_from, year_to, severity (e.g. ["K","A"]: K fatal, A serious,
         B minor, C possible injury, O property damage), collision (text, e.g. 'rear end', 'angle'),
         route (e.g. 'US-460'), juris, weather, surface, night, alcohol, speed, distracted, pedestrian,
-        bike (true/false), place + radius_miles (e.g. place='Richmond center')."""
+        bike (true/false), place + radius_miles (e.g. place='Richmond center'), node (NODE id(s) from
+        find_intersection, e.g. '536154', to count crashes at one intersection)."""
         ensure_loaded()
         f = filters(year_from=year_from, year_to=year_to, severity=severity, collision=collision, route=route,
                     juris=juris, night=night, alcohol=alcohol, pedestrian=pedestrian, place=place,
-                    radius_miles=radius_miles)
+                    radius_miles=radius_miles, node=node)
         where, p = build_where(srv, f)
         tot = fetch(f"SELECT count(*) AS crashes, count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections, "
                     f"{sev_cols()}, min(crash_year) AS first_year, max(crash_year) AS last_year "

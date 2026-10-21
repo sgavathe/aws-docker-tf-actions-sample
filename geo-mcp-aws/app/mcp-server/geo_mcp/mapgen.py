@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import html
 import json
+import os
+import re
 
 PALETTE = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#8c564b"]
 
@@ -26,6 +28,13 @@ def _bounds(layers: list[dict]) -> list[float] | None:
     if not xs:
         return None
     return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def data_source() -> str:
+    """Footer wording for where the analysis data lives (server config, never user input)."""
+    label = os.environ.get("DATA_SOURCE_LABEL") or (
+        "Aurora PostgreSQL in AWS" if os.environ.get("DB_IAM_AUTH") == "1" else "the enclave PostGIS")
+    return re.sub(r"[^\w ().,/-]", "", label)[:80]
 
 
 def render_map(title: str, layers: list[dict], basemap: str = "offline", subtitle: str = "") -> str:
@@ -52,6 +61,10 @@ def render_map(title: str, layers: list[dict], basemap: str = "offline", subtitl
         + '</div>'
         for l in layers
     )
+    return _render(title, layers, payload, legend, subtitle).replace("the enclave PostGIS", data_source())
+
+
+def _render(title, layers, payload, legend, subtitle) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
