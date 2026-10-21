@@ -76,12 +76,12 @@
   <form class="card" id="loginform">
     <span class="mark big" aria-hidden="true"></span>
     <h2 id="logintitle">Sign in</h2>
-    <p class="muted">Identity provider: Keycloak (realm <code>geo</code>). Your role decides which tools the assistant may use for you.</p>
+    <p class="muted">Sign in with the account your administrator created. Your role decides which tools the assistant may use for you.</p>
     <label>Username <input id="username" autocomplete="username" required></label>
     <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
     <p class="error" id="loginerror" role="alert"></p>
     <button type="submit">Sign in</button>
-    <p class="hint">Demo accounts: <code>analyst</code> (read + write) · <code>viewer</code> (read only)</p>
+    <p class="hint">Roles: <code>geo-writer</code> (maps, exports) · <code>geo-reader</code> (read only)</p>
   </form>
 </div>
 </body>
