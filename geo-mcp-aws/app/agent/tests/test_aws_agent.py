@@ -154,6 +154,7 @@ def test_cognito_login_session_and_private_maps(aws_app):
     assert c.get("/api/me").json()["user"] == "analyst"
     m = c.get("/maps/crash-1.html")
     assert m.status_code == 200 and "unsafe-inline" in m.headers["content-security-policy"]
+    assert "frame-src 'self'" in m.headers["content-security-policy"]          # dashboards frame their map
     d = c.get("/maps/exports/crashes.geojson")
     assert d.status_code == 200 and "attachment" in d.headers["content-disposition"]
     for bad in ("../secret.html", "exports/../../x.geojson", "x.js", "exports/a.geojson.html.exe"):

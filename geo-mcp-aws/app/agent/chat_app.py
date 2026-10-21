@@ -136,8 +136,10 @@ async def security_headers(request: Request, call_next):
 
 TILES = os.environ.get("MAP_TILE_ORIGIN", "")   # e.g. https://tile.openstreetmap.org when MAP_BASEMAP=osm
 MAP_CSP = (f"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-           f"img-src 'self' data: blob: {TILES}; worker-src blob:; child-src blob:; connect-src 'self' {TILES}; "
-           f"frame-ancestors 'self'; base-uri 'none'")
+           f"img-src 'self' data: blob: {TILES}; worker-src blob:; child-src blob:; frame-src 'self'; "
+           f"connect-src 'self' {TILES}; frame-ancestors 'self'; base-uri 'none'")
+# frame-src 'self': a dashboard page frames its own map page (/maps/...); without it, frames fall back
+# to child-src (blob: only) and the browser refuses the same-origin map.
 
 
 class Login(BaseModel):
