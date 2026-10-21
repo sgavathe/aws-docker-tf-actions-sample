@@ -197,6 +197,22 @@ const map = new maplibregl.Map({{
 }});
 map.addControl(new maplibregl.NavigationControl());
 if (DATA.geocode) addressSearch(map);
+// Zoom links (dashboard lists): #zoom=lon,lat[,zoom]&label=text. Validated numbers only; the label
+// is shown as text, never HTML.
+let zoomMarker = null;
+function zoomFromHash() {{
+  const h = new URLSearchParams(location.hash.slice(1));
+  const v = (h.get('zoom') || '').split(',').map(Number);
+  if (v.length < 2 || !v.every(Number.isFinite) || Math.abs(v[0]) > 180 || Math.abs(v[1]) > 90) return false;
+  const z = Math.min(20, Math.max(3, v[2] || 17));
+  if (zoomMarker) zoomMarker.remove();
+  zoomMarker = new maplibregl.Marker({{color: '#111827'}}).setLngLat([v[0], v[1]]).addTo(map);
+  const label = (h.get('label') || '').slice(0, 120);
+  if (label) {{ zoomMarker.setPopup(new maplibregl.Popup({{offset: 24}}).setText(label)); zoomMarker.togglePopup(); }}
+  map.flyTo({{center: [v[0], v[1]], zoom: z}});
+  return true;
+}}
+window.addEventListener('hashchange', zoomFromHash);
 map.on('load', () => {{
   const popup = (layerId) => map.on('click', layerId, e => {{
     const p = e.features[0].properties;
@@ -262,7 +278,7 @@ map.on('load', () => {{
     popup(id + '-pt');
     if (l.ramp) popup(id + '-fill');
   }});
-  if (DATA.bounds) map.fitBounds([[DATA.bounds[0], DATA.bounds[1]], [DATA.bounds[2], DATA.bounds[3]]], {{padding: 60}});
+  if (!zoomFromHash() && DATA.bounds) map.fitBounds([[DATA.bounds[0], DATA.bounds[1]], [DATA.bounds[2], DATA.bounds[3]]], {{padding: 60}});
 }});
 }})();
 </script></body></html>

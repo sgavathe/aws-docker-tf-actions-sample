@@ -75,3 +75,19 @@ def test_dashboard_escapes_everything():
         "recommendations": [{"title": evil, "measures": evil, "why": evil}], "source": evil})
     assert "<script>" not in page and 'onload="alert' not in page
     assert page.count("&lt;script&gt;") >= 8
+
+
+def test_dashboard_zoom_links_target_the_map_frame():
+    page = dash.render_dashboard({
+        "title": "t", "scope": "s", "map_file": "pg-map-1.html",
+        "kpis": {"crashes": 1, "k": 0, "a": 0, "injured": 0, "at_intersections": 1},
+        "hotspots": [{"location": "TEMPLE AVE & PUDDLEDOCK RD", "crashes": 38, "lon": -77.33, "lat": 37.21},
+                     {"location": "NO COORDS", "crashes": 2}],
+        "network": {"top": [{"location": "X & Y", "crashes": 1, "betweenness": .1, "critical_and_dangerous": .1,
+                             "lon": 999, "lat": 0}], "nodes": 1, "links": 0, "sampled_origins": 1},
+        "factor_rows": [], "collisions": [], "by_hour": [0] * 24, "by_dow": [0] * 7, "patterns": [],
+        "recommendations": [], "source": ""})
+    assert 'name="dashmap"' in page
+    assert ('href="pg-map-1.html#zoom=-77.33000,37.21000,17&amp;label=TEMPLE%20AVE%20%26%20PUDDLEDOCK%20RD" '
+            'target="dashmap"') in page
+    assert page.count('target="dashmap"') == 1          # no link without valid coordinates
