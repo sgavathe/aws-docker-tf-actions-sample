@@ -1,17 +1,28 @@
-# Cognito replaces Keycloak in AWS: same two roles (as groups), no server to run.
-# Admin-created users only (no self sign-up). See scripts/users.sh.
+# Cognito replaces Keycloak in AWS: same roles (as groups), no server to run.
+# Users: admin-created (scripts/users.sh) and, with var.self_signup, open sign-up with email
+# verification (signup.tf). Self-registered accounts land in the geo-demo group.
 
 resource "aws_cognito_user_pool" "main" {
   name                     = "${local.name}-users"
   deletion_protection      = "INACTIVE" # demo stack
-  auto_verified_attributes = []
+  auto_verified_attributes = ["email"]  # sign-up confirms the address with an emailed code
 
   username_configuration {
     case_sensitive = false
   }
 
   admin_create_user_config {
-    allow_admin_create_user_only = true
+    allow_admin_create_user_only = !var.self_signup
+  }
+
+  verification_message_template {
+    default_email_option = "CONFIRM_WITH_CODE"
+    email_subject        = "Your Geo Analyst demo code"
+    email_message        = "Your confirmation code is {####}. It expires in 24 hours."
+  }
+
+  lambda_config {
+    post_confirmation = aws_lambda_function.hooks.arn
   }
 
   password_policy {

@@ -76,12 +76,36 @@
   <form class="card" id="loginform">
     <span class="mark big" aria-hidden="true"></span>
     <h2 id="logintitle">Sign in</h2>
-    <p class="muted">Sign in with the account your administrator created. Your role decides which tools the assistant may use for you.</p>
-    <label>Username <input id="username" autocomplete="username" required></label>
+    <p class="muted">Sign in to ask about crashes, roads and infrastructure. Your account's role decides which tools the assistant may use for you.</p>
+    <label>Username or email <input id="username" autocomplete="username" required></label>
     <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
     <p class="error" id="loginerror" role="alert"></p>
+    <p class="ok" id="loginok" role="status"></p>
     <button type="submit">Sign in</button>
-    <p class="hint">Roles: <code>geo-writer</code> (maps, exports) · <code>geo-reader</code> (read only)</p>
+    <p class="hint" id="signuplink" hidden>No account? <button type="button" class="linkbtn" id="showsignup">Create one</button></p>
+  </form>
+  <form class="card" id="signupform" hidden>
+    <span class="mark big" aria-hidden="true"></span>
+    <h2>Create a demo account</h2>
+    <p class="muted">Free demo access: maps, dashboards and analysis, with a daily question limit. We'll email you a code to confirm your address.</p>
+    <label>Email <input id="su_email" type="email" autocomplete="email" required maxlength="254"></label>
+    <label>Password <input id="su_password" type="password" autocomplete="new-password" required minlength="14" maxlength="200"></label>
+    <label>Password again <input id="su_password2" type="password" autocomplete="new-password" required minlength="14" maxlength="200"></label>
+    <p class="hint">14+ characters with upper and lower case, a number and a symbol.</p>
+    <p class="error" id="signuperror" role="alert"></p>
+    <button type="submit">Create account</button>
+    <p class="hint">Have an account? <button type="button" class="linkbtn" data-show="loginform">Sign in</button></p>
+  </form>
+  <form class="card" id="confirmform" hidden>
+    <span class="mark big" aria-hidden="true"></span>
+    <h2>Check your email</h2>
+    <p class="muted">We sent a 6-digit code to <b id="cf_email"></b>. It can take a minute; check spam too.</p>
+    <label>Code <input id="cf_code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6,8}" maxlength="8"></label>
+    <p class="error" id="confirmerror" role="alert"></p>
+    <p class="ok" id="confirmok" role="status"></p>
+    <button type="submit">Confirm</button>
+    <p class="hint"><button type="button" class="linkbtn" id="resend">Send a new code</button> ·
+      <button type="button" class="linkbtn" data-show="loginform">Back to sign in</button></p>
   </form>
 </div>
 </body>

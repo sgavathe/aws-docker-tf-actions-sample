@@ -103,7 +103,7 @@ jobs:
         run: |
           . ./images.env
           # function suffix -> image (the daily ingest runs the jobs image with another handler)
-          for pair in mcp:MCP chat:CHAT jobs:JOBS ingest:JOBS; do
+          for pair in mcp:MCP chat:CHAT jobs:JOBS ingest:JOBS signup-hooks:JOBS; do
             fn="$PREFIX-${pair%%:*}"; var="${pair##*:}_IMAGE"
             aws lambda update-function-code --function-name "$fn" --image-uri "${!var}" > /dev/null
             aws lambda wait function-updated --function-name "$fn"

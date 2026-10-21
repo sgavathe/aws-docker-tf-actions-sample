@@ -204,3 +204,28 @@ def test_gi_star_finds_planted_hot_spot_and_ignores_noise():
     out = gi_star(cells)
     assert out[(11, 11)][1] == 3 and out[(11, 11)][0] > 2.58      # centre of the cluster: 99% hot
     assert out[(25, 25)][1] == 0                                   # far away: not significant
+
+
+def test_demo_accounts_cannot_load_data(monkeypatch):
+    from mcp import Client
+    from mcp.server.auth.middleware import auth_context
+    from geo_mcp import server as srv
+
+    monkeypatch.setattr(srv, "fetch", lambda sql, params=(), dsn=None: [])
+    app = srv.build_server(verifier=auth.KeycloakTokenVerifier(
+        auth.KeycloakConfig(ISS, "unused", "geo-mcp"), FakeJWKS()))
+
+    async def run(roles):
+        token = auth.claims_to_access_token(
+            "t", jwt.decode(make_token(roles=roles), options={"verify_signature": False}), "geo-mcp")
+        ctx = auth_context.auth_context_var.set(auth_context.AuthenticatedUser(token))
+        try:
+            async with Client(app) as c:
+                return await c.call_tool("load_geojson", {"table": "x", "feature_collection": {"features": []}})
+        finally:
+            auth_context.auth_context_var.reset(ctx)
+
+    demo = asyncio.run(run(("geo-reader", "geo-writer", "geo-demo")))
+    assert demo.is_error and "demo accounts" in demo.content[0].text
+    writer = asyncio.run(run(("geo-reader", "geo-writer")))
+    assert "demo accounts" not in writer.content[0].text          # a regular writer gets past the check

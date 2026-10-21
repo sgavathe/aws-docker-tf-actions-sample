@@ -35,7 +35,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from . import db, storage
-from .auth import READER, WRITER, current_user, make_verifier, require
+from .auth import DEMO, READER, WRITER, current_user, make_verifier, require
 from .mapgen import render_map
 from .sqlguard import guard_select
 
@@ -534,6 +534,8 @@ def build_server(verifier=None) -> MCPServer:
     def load_geojson(table: str, feature_collection: dict) -> dict:
         """Load a GeoJSON FeatureCollection (EPSG:4326) into work.<table>. Properties are
         stored as jsonb in `props`. Replaces the table if it exists."""
+        if DEMO in current_user()[1]:
+            raise PermissionError("demo accounts can make maps and dashboards but not load data into the database")
         if not NAME_RE.match(table):
             raise ValueError("table must be lowercase letters, digits, underscore")
         feats = feature_collection.get("features", [])

@@ -104,6 +104,15 @@ There is no NAT gateway, ALB, interface endpoint, public IPv4 address or always-
   `hard_stop_usd` ($20), AWS Budgets attaches a deny policy to the chat role (no model calls or
   searches) and emails you. Detach `geo-devops-demo-geomcp-chat-hard-stop` from the chat role to resume.
 - Guests: `./geo-mcp-aws/scripts/users.sh guest1 demo` (maps and dashboards, 30 questions a day).
+- **Open sign-up** (`terraform/signup.tf`, on by default; `-var self_signup=false` turns it off):
+  "Create one" on the sign-in page takes an email and password; Cognito emails a 6-digit code.
+  On confirmation a Cognito trigger puts the account in `geo-reader`, `geo-writer` and `geo-demo`:
+  maps and dashboards with the demo question limit, but no loading data into the database.
+  Responses never reveal whether an email is already registered. Cognito's built-in email sends
+  about 50 messages a day; switch the pool to Amazon SES for more.
+- **Owner notifications** (to `BUDGET_EMAIL`, or `TF_VAR_alert_email`): every new sign-up, and
+  today's spend passing 80% and 100% of `daily_budget_usd` (once each per day). AWS first sends a
+  "Subscription Confirmation" email: click it, or nothing arrives.
 - If you change `bedrock_model_id`, set `bedrock_price_in_per_mtok` / `bedrock_price_out_per_mtok`
   to that model's prices so the daily cap stays accurate.
 Set `BUDGET_EMAIL` to get a budget alarm (default $10).

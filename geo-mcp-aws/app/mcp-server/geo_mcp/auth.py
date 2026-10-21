@@ -21,7 +21,8 @@ log = logging.getLogger("geo_mcp.auth")
 
 READER = "geo-reader"
 WRITER = "geo-writer"
-KNOWN_ROLES = {READER, WRITER}
+DEMO = "geo-demo"   # self sign-up / guest accounts: daily limits, no data loading
+KNOWN_ROLES = {READER, WRITER, DEMO}
 
 
 @dataclass

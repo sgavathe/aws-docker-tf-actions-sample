@@ -47,6 +47,7 @@ locals {
     chat   = { function = "${local.name}-chat", image = "chat" }
     jobs   = { function = "${local.name}-jobs", image = "jobs" }
     ingest = { function = "${local.name}-ingest", image = "jobs" }
+    hooks  = { function = "${local.name}-signup-hooks", image = "jobs" }
   }
 }
 
@@ -268,6 +269,12 @@ resource "aws_iam_role_policy" "chat" {
         Effect   = "Allow"
         Action   = ["geo-places:Geocode", "geo-places:SearchText"]
         Resource = "arn:${data.aws_partition.current.partition}:geo-places:${local.region}::provider/default"
+      },
+      {
+        Sid      = "NotifyOwner" # daily budget alerts (signup.tf)
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.alerts.arn
       }
     ]
   })
@@ -297,6 +304,8 @@ resource "aws_lambda_function" "chat" {
       MCP_AUTH_MODE     = "sigv4"
       MAX_STEPS         = "10"
       GEOCODE_PROVIDER  = "amazon-location" # /api/geocode for the map search box
+      SIGNUP_ENABLED    = tostring(var.self_signup)
+      ALERT_TOPIC_ARN   = aws_sns_topic.alerts.arn
       # Daily limits (limits.tf, app/agent/quota.py)
       DAILY_BUDGET_USD           = tostring(var.daily_budget_usd)
       DEMO_DAILY_QUESTIONS       = tostring(var.demo_daily_questions)

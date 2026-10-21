@@ -54,11 +54,51 @@ $("loginform").addEventListener("submit", async (e) => {
   $("loginerror").textContent = "";
   try {
     const r = await rawPost("/api/login", { username: $("username").value, password: $("password").value });
-    if (!r.ok) { $("loginerror").textContent = "Sign-in failed. Check the username and password."; return; }
+    if (!r.ok) { $("loginerror").textContent = await errorText(r, "Sign-in failed. Check the username and password."); return; }
     $("password").value = "";
     signedIn(await r.json());
   } catch { $("loginerror").textContent = "Cannot reach the sign-in service."; }
 });
+/* ---------- open sign-up (shown only when the server enables it) ---------- */
+async function errorText(r, fallback) {
+  try { const j = await r.json(); return typeof j.detail === "string" ? j.detail : fallback; } catch { return fallback; }
+}
+function showForm(id) {
+  ["loginform", "signupform", "confirmform"].forEach((f) => { $(f).hidden = f !== id; });
+  ["loginerror", "signuperror", "confirmerror", "loginok", "confirmok"].forEach((m) => { $(m).textContent = ""; });
+  const first = $(id).querySelector("input"); if (first) first.focus();
+}
+document.querySelectorAll("[data-show]").forEach((b) => b.addEventListener("click", () => showForm(b.dataset.show)));
+$("showsignup").addEventListener("click", () => showForm("signupform"));
+fetch("/api/signup-enabled").then((r) => r.ok ? r.json() : { enabled: false })
+  .then((j) => { $("signuplink").hidden = !j.enabled; }).catch(() => {});
+let signupEmail = "";
+$("signupform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("su_email").value.trim().toLowerCase(), pw = $("su_password").value;
+  if (pw !== $("su_password2").value) { $("signuperror").textContent = "The passwords differ."; return; }
+  try {
+    const r = await rawPost("/api/signup", { email: email, password: pw });
+    if (!r.ok) { $("signuperror").textContent = await errorText(r, "Sign-up failed. Try again."); return; }
+    signupEmail = email; $("su_password").value = ""; $("su_password2").value = "";
+    $("cf_email").textContent = email; showForm("confirmform");
+  } catch { $("signuperror").textContent = "Cannot reach the sign-up service."; }
+});
+$("confirmform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await rawPost("/api/confirm", { email: signupEmail, code: $("cf_code").value.trim() });
+    if (!r.ok) { $("confirmerror").textContent = await errorText(r, "That code didn't work."); return; }
+    $("cf_code").value = ""; showForm("loginform");
+    $("username").value = signupEmail; $("loginok").textContent = "Email confirmed. Sign in with your password.";
+    $("password").focus();
+  } catch { $("confirmerror").textContent = "Cannot reach the sign-up service."; }
+});
+$("resend").addEventListener("click", async () => {
+  await rawPost("/api/resend", { email: signupEmail }).catch(() => {});
+  $("confirmerror").textContent = ""; $("confirmok").textContent = "If that address is waiting for a code, a new one is on its way.";
+});
+
 $("signout").addEventListener("click", async () => {
   await rawPost("/api/logout", {});
   clearAll(); showLogin();

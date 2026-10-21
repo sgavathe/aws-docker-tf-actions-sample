@@ -190,7 +190,9 @@ def _cognito(data: dict) -> dict:
         flow, params = "REFRESH_TOKEN_AUTH", {"REFRESH_TOKEN": data["refresh_token"]}
     try:
         r = _idp.initiate_auth(ClientId=CLIENT_ID, AuthFlow=flow, AuthParameters=params)
-    except Exception:
+    except Exception as exc:
+        if type(exc).__name__ == "UserNotConfirmedException":
+            raise HTTPException(403, "Confirm your email first: enter the code we sent you")
         raise HTTPException(401, "Sign-in failed")
     res = r.get("AuthenticationResult")
     if not res:   # e.g. NEW_PASSWORD_REQUIRED: set a permanent password with scripts/users.sh
@@ -239,6 +241,8 @@ async def login(body: Login, request: Request, response: Response):
         {"grant_type": "password", "username": body.username, "password": body.password}))
     claims = _claims(tokens["access_token"])
     user, roles = _user_roles(claims, body.username)
+    if not roles:
+        raise HTTPException(403, "This account has no access yet. Ask the administrator.")
     demo = DEMO_GROUP in (claims.get("cognito:groups") or claims.get("realm_access", {}).get("roles") or [])
     sid = secrets.token_urlsafe(32)
     SESSIONS.put(sid, {"tokens": tokens, "user": user, "roles": roles, "demo": demo, "messages": [],
@@ -324,6 +328,7 @@ async def ask(body: Ask, request: Request):
                 if ev.get("type") == "usage":   # Bedrock tokens -> today's spend; not sent to the browser
                     try:
                         QUOTA.add_spend(quota_mod.model_cost(ev["input"], ev["output"]))
+                        _spend_alerts()
                     except Exception:
                         traceback.print_exc(file=sys.stderr)
                     continue
@@ -334,6 +339,123 @@ async def ask(body: Ask, request: Request):
             SESSIONS.put(sid, s)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# ---------------------------------------------------------------- open sign-up (AWS)
+# Email + password; Cognito emails a 6-digit code. Confirmation runs the pool's PostConfirmation
+# trigger, which puts the account in the demo groups and notifies the owner. Responses don't
+# reveal whether an email is already registered.
+
+SIGNUP_ENABLED = os.environ.get("SIGNUP_ENABLED", "") == "true" and AUTH_PROVIDER == "cognito"
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
+_sns = None
+
+
+class SignUp(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+    password: str = Field(min_length=14, max_length=200)
+
+
+class Confirm(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+    code: str = Field(min_length=6, max_length=8, pattern=r"^\d+$")
+
+
+class Resend(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+
+
+def _signup_email(raw: str) -> str:
+    if not SIGNUP_ENABLED:
+        raise HTTPException(404)
+    email = raw.strip().lower()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "Enter a valid email address")
+    return email
+
+
+def _idp_client():
+    global _idp
+    if _idp is None:
+        import boto3
+        _idp = boto3.client("cognito-idp")
+    return _idp
+
+
+@app.get("/api/signup-enabled")
+async def signup_enabled():
+    return {"enabled": SIGNUP_ENABLED}
+
+
+@app.post("/api/signup")
+async def signup(body: SignUp, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().sign_up, ClientId=CLIENT_ID, Username=email, Password=body.password,
+                                UserAttributes=[{"Name": "email", "Value": email}])
+    except Exception as exc:
+        kind = type(exc).__name__
+        if kind == "InvalidPasswordException":
+            raise HTTPException(400, "Password needs 14+ characters with upper and lower case, a number and a symbol")
+        if kind not in ("UsernameExistsException",):   # existing email: same answer as a new one
+            traceback.print_exc(file=sys.stderr)
+            raise HTTPException(429 if kind in ("TooManyRequestsException", "LimitExceededException") else 400,
+                                "Sign-up is busy; try again in a few minutes")
+    return {"ok": True, "next": "confirm"}
+
+
+@app.post("/api/confirm")
+async def confirm(body: Confirm, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().confirm_sign_up, ClientId=CLIENT_ID, Username=email,
+                                ConfirmationCode=body.code)
+    except Exception as exc:
+        if type(exc).__name__ == "NotAuthorizedException":   # already confirmed
+            return {"ok": True}
+        raise HTTPException(400, "That code is wrong or expired. Request a new one.")
+    return {"ok": True}
+
+
+@app.post("/api/resend")
+async def resend(body: Resend, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().resend_confirmation_code, ClientId=CLIENT_ID, Username=email)
+    except Exception:
+        pass   # same answer whether or not the email exists
+    return {"ok": True}
+
+
+def _notify(subject: str, message: str) -> None:
+    global _sns
+    if not ALERT_TOPIC_ARN:
+        return
+    try:
+        if _sns is None:
+            import boto3
+            _sns = boto3.client("sns")
+        _sns.publish(TopicArn=ALERT_TOPIC_ARN, Subject=subject[:100], Message=message)
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+
+def _spend_alerts() -> None:
+    """Email the owner once per day when today's spend passes 80% and 100% of the cap."""
+    cap = quota_mod.DAILY_BUDGET_USD
+    if not cap:
+        return
+    spent = QUOTA.spent()
+    for pct in (80, 100):
+        if spent >= cap * pct / 100 and QUOTA.once(f"alert-{pct}"):
+            _notify(f"Geo demo: {pct}% of today's budget used",
+                    f"Estimated model + search spend today: ${spent:.3f} of ${cap:.2f} ({pct}% threshold).\n"
+                    + ("New questions are now refused until midnight UTC (8 pm Eastern), except exempt users."
+                       if pct >= 100 else "Questions continue until the cap is reached."))
 
 
 # ---------------------------------------------------------------- address search (AWS)

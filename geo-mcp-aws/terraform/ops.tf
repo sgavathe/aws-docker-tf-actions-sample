@@ -73,10 +73,11 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = aws_ecr_repository.app.arn
       },
       {
-        Sid      = "UpdateTheseFunctionsCode"
-        Effect   = "Allow"
-        Action   = ["lambda:UpdateFunctionCode", "lambda:GetFunction", "lambda:GetFunctionConfiguration"]
-        Resource = [aws_lambda_function.mcp.arn, aws_lambda_function.chat.arn, aws_lambda_function.jobs.arn, aws_lambda_function.ingest.arn]
+        Sid    = "UpdateTheseFunctionsCode"
+        Effect = "Allow"
+        Action = ["lambda:UpdateFunctionCode", "lambda:GetFunction", "lambda:GetFunctionConfiguration"]
+        Resource = [aws_lambda_function.mcp.arn, aws_lambda_function.chat.arn, aws_lambda_function.jobs.arn,
+        aws_lambda_function.ingest.arn, aws_lambda_function.hooks.arn]
       },
       {
         Sid      = "SyncMapLibraries"

@@ -45,6 +45,12 @@ class MemoryQuota:
     def _get(self, key: str) -> int:
         return self.n.get(key, 0)
 
+    def _once(self, key: str) -> bool:
+        if key in self.n:
+            return False
+        self.n[key] = 1
+        return True
+
 
 class DynamoQuota(MemoryQuota):
     def __init__(self, table: str):
@@ -60,6 +66,15 @@ class DynamoQuota(MemoryQuota):
     def _get(self, key: str) -> int:
         item = self.t.get_item(Key={"sid": key}, ConsistentRead=True).get("Item")
         return int(item["n"]) if item else 0
+
+    def _once(self, key: str) -> bool:
+        """True for exactly one caller per key (conditional put), across all Lambda instances."""
+        try:
+            self.t.put_item(Item={"sid": key, "n": 1, "expires": int(time.time()) + 3 * 86400},
+                            ConditionExpression="attribute_not_exists(sid)")
+            return True
+        except self.t.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
 
 
 class Quota:
@@ -105,6 +120,10 @@ class Quota:
 
     def search_blocked(self, user: str) -> bool:
         return bool(user.lower() not in EXEMPT and DAILY_BUDGET_USD and self.spent() >= DAILY_BUDGET_USD)
+
+    def once(self, name: str) -> bool:
+        """True the first time `name` is claimed today (e.g. one alert email per threshold per day)."""
+        return self.s._once(f"quota#{today()}#{name}")
 
     def count_question(self, user: str) -> None:
         self.s._add(self._user(user), 1)

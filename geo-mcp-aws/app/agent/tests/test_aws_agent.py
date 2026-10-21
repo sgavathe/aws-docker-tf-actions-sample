@@ -375,3 +375,72 @@ def test_tool_call_written_as_text_is_run(monkeypatch):
     answer = [e for e in events if e["type"] == "answer"][0]["content"]
     assert answer == "29 crashes since 2020. Map: /maps/m-1.html"         # real link kept
     assert any("[agent note]" in str(m.get("content")) for m in history)
+
+
+# ---------------------------------------------------------------- open sign-up + alerts
+
+def test_signup_confirm_and_no_enumeration(aws_app, monkeypatch):
+    c, chat_app = aws_app
+    monkeypatch.setattr(chat_app, "SIGNUP_ENABLED", True)
+    assert c.get("/api/signup-enabled").json() == {"enabled": True}
+    ok = {"email": "New.User@Example.com", "password": "Str0ng!Passw0rd!"}
+    assert c.post("/api/signup", json=ok).json() == {"ok": True, "next": "confirm"}
+    assert c.post("/api/signup", json=ok).json() == {"ok": True, "next": "confirm"}      # same answer twice
+    assert c.post("/api/signup", json={**ok, "email": "not-an-email"}).status_code in (400, 422)
+    assert c.post("/api/signup", json={**ok, "password": "short"}).status_code == 422
+    assert c.post("/api/signup", content="x").status_code in (415, 422)                  # JSON only
+    assert c.post("/api/resend", json={"email": "nobody@example.com"}).json() == {"ok": True}
+    assert c.post("/api/confirm", json={"email": "new.user@example.com", "code": "123456"}).status_code == 200
+    # confirmed but no groups yet (the Cognito trigger adds them in AWS): a clear refusal, no session
+    r = c.post("/api/login", json={"username": "new.user@example.com", "password": ok["password"]})
+    assert r.status_code == 403 and "no access" in r.json()["detail"]
+    monkeypatch.setattr(chat_app, "SIGNUP_ENABLED", False)
+    assert c.post("/api/signup", json=ok).status_code == 404
+
+
+def test_post_confirmation_hook_adds_demo_groups_and_notifies(monkeypatch):
+    with moto.mock_aws():
+        idp, sns = boto3.client("cognito-idp"), boto3.client("sns")
+        pool = idp.create_user_pool(PoolName="p")["UserPool"]["Id"]
+        for g in ("geo-reader", "geo-writer", "geo-demo"):
+            idp.create_group(GroupName=g, UserPoolId=pool)
+        idp.admin_create_user(UserPoolId=pool, Username="a@b.co", MessageAction="SUPPRESS")
+        topic = sns.create_topic(Name="alerts")["TopicArn"]
+        monkeypatch.setenv("ALERT_TOPIC_ARN", topic)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../mcp-server"))
+        from geo_mcp import cognito_hooks
+        importlib.reload(cognito_hooks)
+        published = []
+        real = boto3.client
+        monkeypatch.setattr(boto3, "client", lambda name, **kw: _Spy(real(name, **kw), published) if name == "sns" else real(name, **kw))
+        ev = {"triggerSource": "PostConfirmation_ConfirmSignUp", "userPoolId": pool, "userName": "a@b.co",
+              "request": {"userAttributes": {"email": "a@b.co"}}}
+        assert cognito_hooks.handler(ev, None) == ev
+        groups = {g["GroupName"] for g in idp.admin_list_groups_for_user(UserPoolId=pool, Username="a@b.co")["Groups"]}
+        assert groups == {"geo-reader", "geo-writer", "geo-demo"}
+        assert published and "New demo sign-up: a@b.co" in published[0]["Message"]
+        other = {**ev, "triggerSource": "PostConfirmation_ConfirmForgotPassword"}
+        assert cognito_hooks.handler(other, None) == other and len(published) == 1
+
+
+class _Spy:
+    def __init__(self, inner, sink):
+        self.inner, self.sink = inner, sink
+
+    def publish(self, **kw):
+        self.sink.append(kw)
+        return self.inner.publish(**kw)
+
+
+def test_budget_alerts_once_per_threshold_per_day(aws_app, monkeypatch):
+    c, chat_app = aws_app
+    import quota
+    monkeypatch.setattr(quota, "DAILY_BUDGET_USD", 1.0)
+    sent = []
+    monkeypatch.setattr(chat_app, "_notify", lambda subject, message: sent.append(subject))
+    chat_app.QUOTA.add_spend(0.5); chat_app._spend_alerts()
+    assert sent == []
+    chat_app.QUOTA.add_spend(0.35); chat_app._spend_alerts(); chat_app._spend_alerts()
+    assert sent == ["Geo demo: 80% of today's budget used"]
+    chat_app.QUOTA.add_spend(0.2); chat_app._spend_alerts(); chat_app._spend_alerts()
+    assert sent == ["Geo demo: 80% of today's budget used", "Geo demo: 100% of today's budget used"]
