@@ -54,6 +54,10 @@ SYSTEM = (
     "the route number): its total_crashes and K/A/B/C/O columns ARE the answer; then "
     "map_crashes(node='<NODE number from its result>', same years) to map it, never node='intersection'; "
     "crash_profile(node) to explain one location; worst_segments for road stretches; "
+    "crash_dashboard(juris or place, year_from) for a dashboard / report / overview with patterns and "
+    "recommendations; crash_network(juris or place) for the road network: critical / most important / "
+    "chokepoint intersections (betweenness x severity); road_closure_cascade(node) for 'what if this "
+    "intersection is closed', detours and cascades (it finds the county itself); "
     "map_crashes for a crash web map, with style: 'heatmap' for heat/density maps, 'hotspots' for hot "
     "spot / statistically significant / Gi* maps, 'clusters' for cluster maps, 'grid' for crash counts "
     "per area, 'points' (default) for individual crashes in a small area; weight_by='severity' when "
@@ -66,7 +70,7 @@ SYSTEM = (
     "state the numbers (totals, and by severity for crashes) in the answer before any map link. Every "
     "number must come from a successful tool result in THIS turn: if a tool failed, fix the call or say "
     "you could not get the number; never reuse numbers from an earlier answer for different years or "
-    "filters. Only link a map that map_crashes or make_web_map returned this turn. 'What type of "
+    "filters. Only link a map (url) that a tool returned this turn. 'What type of "
     "crashes' questions: crash_summary for the counts, then map_crashes(color_by='collision'). Give the "
     "map URL as plain text. Be concise and give the reasons."
 )
@@ -248,6 +252,11 @@ def simple_schema(node):
                 merged = dict(non_null[0])
                 merged.update({k: v for k, v in out.items() if k not in merged})
                 out = merged
+            elif non_null and all(isinstance(o, dict) and set(o) == {"type"} for o in non_null):
+                # str | int and similar: one plain type for the model (the server accepts either)
+                types = [o["type"] for o in non_null]
+                out.pop(key)
+                out = {**{"type": "string" if "string" in types else types[0]}, **out}
             elif non_null:
                 out[key] = non_null
     return out

@@ -243,7 +243,15 @@ map.on('load', () => {{
       : l.color;
     map.addLayer({{id: id + '-fill', type: 'fill', source: id, filter: ['==', '$type', 'Polygon'],
       paint: {{'fill-color': fill, 'fill-opacity': l.ramp ? 0.7 : 0.15, 'fill-outline-color': l.ramp ? 'rgba(255,255,255,0.4)' : l.color}}}});
-    if (!l.ramp) map.addLayer({{id: id + '-line', type: 'line', source: id,
+    if (l.lines) {{
+      // network links: color and width from a 0..1 field (through-trips or detour increase)
+      const wf = l.width_field;
+      map.addLayer({{id: id + '-line', type: 'line', source: id, filter: ['==', '$type', 'LineString'],
+        layout: {{'line-cap': 'round'}},
+        paint: {{'line-color': fill, 'line-opacity': 0.85,
+                 'line-width': wf ? ['interpolate', ['linear'], ['to-number', ['get', wf]], 0, 1, 1, 8] : 2.5}}}});
+      popup(id + '-line');
+    }} else if (!l.ramp) map.addLayer({{id: id + '-line', type: 'line', source: id,
       paint: {{'line-color': l.color, 'line-width': 2.5, 'line-opacity': 0.8}}}});
     map.addLayer({{id: id + '-pt', type: 'circle', source: id, filter: ['==', '$type', 'Point'],
       paint: {{'circle-color': fill, 'circle-radius': circleRadius(l), 'circle-opacity': l.size_field ? 0.6 : 1,

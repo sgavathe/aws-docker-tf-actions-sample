@@ -668,3 +668,288 @@ def register(mcp, srv) -> None:
         if any(l.get("truncated") for l in layers):
             result["warning"] = "more than 250,000 crashes matched; only the first 250,000 were exported. Add filters."
         return result
+
+    # ------------------------------------------------------------ road network + dashboard
+    from . import crash_dashboard as dash, crash_network as cn
+
+    NET_MAX_NODES = 8000
+    LOAD_RAMP = [[0, "#cbd5e1"], [0.15, "#fdba74"], [0.4, "#f97316"], [1, "#b91c1c"]]
+
+    def area_filters(juris, place, radius_miles) -> dict:
+        area = filters(juris=juris, place=place, radius_miles=radius_miles)
+        if not (area.get("juris") or area.get("place")):
+            raise ValueError("the road network is built per area: pass juris (county or city, e.g. "
+                             "'Prince George') or place + radius_miles")
+        return area
+
+    def prefixed(where: str, p: dict, tag: str) -> tuple[str, dict]:
+        return re.sub(r"%\((\w+)\)s", rf"%({tag}_\1)s", where), {f"{tag}_{k}": v for k, v in p.items()}
+
+    def node_names(ids: list[str]) -> dict[str, str]:
+        """'MIDDLE RD & PRINCE GEORGE DR'-style names: the two commonest street names at each node."""
+        if not ids:
+            return {}
+        return {r["node"]: r["name"] for r in fetch("""
+            SELECT node, string_agg(s, ' & ' ORDER BY n DESC) AS name FROM (
+              SELECT node, upper(trim(props->>'ROUTE_OR_STREET_NM')) AS s, count(*) AS n,
+                     row_number() OVER (PARTITION BY node ORDER BY count(*) DESC) AS rn
+              FROM crash.crashes WHERE node = ANY(%(ids)s) AND coalesce(props->>'ROUTE_OR_STREET_NM', '') <> ''
+              GROUP BY node, s) t WHERE rn <= 2 GROUP BY node""", {"ids": list(ids)})}
+
+    def network_graph(area: dict, f: dict):
+        """Graph for an area: topology from all years, crash counts from the filters in f."""
+        aw, ap = prefixed(*build_where(srv, area), "a")
+        cw, cp = prefixed(*build_where(srv, f), "c")
+        w = epdo_weights()
+        sev = "CASE severity " + " ".join(f"WHEN '{s}' THEN {float(w.get(s, 0))}" for s in SEV_ORDER) + " ELSE 0 END"
+        nodes = fetch(f"""
+            SELECT node, round(ST_X(ST_Centroid(ST_Collect(geom)))::numeric, 6) AS lon,
+                   round(ST_Y(ST_Centroid(ST_Collect(geom)))::numeric, 6) AS lat,
+                   count(*) FILTER (WHERE {cw}) AS crashes,
+                   count(*) FILTER (WHERE {cw} AND severity = 'K') AS k,
+                   count(*) FILTER (WHERE {cw} AND severity = 'A') AS a,
+                   coalesce(sum({sev}) FILTER (WHERE {cw}), 0) AS epdo,
+                   string_agg(DISTINCT route_label, ' & ') AS routes
+            FROM crash.crashes WHERE node IS NOT NULL AND {aw} GROUP BY node LIMIT {NET_MAX_NODES + 1}""", {**ap, **cp})
+        if len(nodes) > NET_MAX_NODES:
+            raise ValueError(f"more than {NET_MAX_NODES:,} intersections in this area; pick a county, city or smaller radius")
+        links = fetch(f"""
+            WITH n AS (
+              SELECT node, regexp_replace(rte_nm, '(NB|SB|EB|WB)$', '') AS rte, min(route_label) AS label,
+                     percentile_cont(0.5) WITHIN GROUP (ORDER BY rns_mp) AS mp
+              FROM crash.crashes
+              WHERE node IS NOT NULL AND rns_mp IS NOT NULL AND rte_nm IS NOT NULL AND {aw}
+              GROUP BY 1, 2),
+            o AS (SELECT label, node, mp, lead(node) OVER w AS nnode, lead(mp) OVER w AS nmp
+                  FROM n WINDOW w AS (PARTITION BY rte ORDER BY mp))
+            SELECT node, nnode, (nmp - mp) AS miles, label AS rte FROM o WHERE nnode IS NOT NULL""", ap)
+        g = cn.build_graph(nodes, links)
+        if g.number_of_nodes() < 3:
+            raise ValueError("too few connected intersections here to build a road network (needs route mileposts)")
+        return g
+
+    def network_limits() -> str:
+        return ("Road network built from VDOT crash records: intersections that have had a crash are nodes, "
+                "consecutive ones on a route (by milepost) are linked. Quiet intersections are skipped and "
+                "links are drawn as straight lines. Through-traffic is shortest-path betweenness between "
+                "intersections, not measured traffic volume.")
+
+    def criticality_result(g, top: int) -> dict:
+        res = cn.criticality(g, top)
+        names = node_names([r["node"] for r in res["top"]])
+        for r in res["top"]:
+            r["location"] = names.get(r["node"]) or r["location"]
+        return res
+
+    def network_layers(g, res: dict) -> list[dict]:
+        top = res["top"]
+        return [
+            {"name": "Road links (thicker/redder = more through-trips)", "lines": True, "color": "#94a3b8",
+             "color_field": "load", "width_field": "load", "ramp": LOAD_RAMP,
+             "geojson": fc(cn.link_features(g, res["edge_load"], "load")),
+             "legend_note": f"{res['links']:,} links between {res['nodes']:,} intersections"},
+            {"name": f"Top {len(top)} critical and dangerous intersections", "color": "#3b1f8f",
+             "size_field": "critical_and_dangerous",
+             "geojson": fc([{"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(r["lon"]), float(r["lat"])]},
+                             "properties": {k: v for k, v in r.items() if k not in ("lon", "lat")}} for r in top])},
+        ]
+
+    @mcp.tool(annotations=RW)
+    @audited(WRITER)
+    def crash_network(juris: str | None = None, place: str | None = None, radius_miles: float | None = None,
+                      year_from: int | None = None, year_to: int | None = None, top: int = 10,
+                      title: str = "Road network: critical and dangerous intersections") -> dict:
+        """Road NETWORK analysis for a county/city (juris) or place + radius_miles: builds the road graph
+        from VDOT intersection nodes and route mileposts, then ranks intersections that are both
+        CRITICAL (many shortest trips between intersections pass through them: betweenness centrality)
+        and DANGEROUS (crash severity, EPDO). Returns the ranking and a map of links colored by
+        through-traffic. Use for 'critical / most important intersections', 'network', 'betweenness',
+        'chokepoints'. Then road_closure_cascade(node=...) for what happens if one is closed."""
+        ensure_loaded()
+        area = area_filters(juris, place, radius_miles)
+        f = {**area, **filters(year_from=year_from, year_to=year_to)}
+        g = network_graph(area, f)
+        res = criticality_result(g, max(1, min(int(top), 50)))
+        sc = scope(srv, f)
+        name = f"{srv.slug(title)}-{int(time.time())}.html"
+        srv.storage.put_text(name, srv.render_map(title, network_layers(g, res), srv.MAP_BASEMAP, subtitle=sc))
+        return {"scope": sc, "url": f"{srv.MAP_VIEWER_URL}/maps/{name}",
+                "network": {k: res[k] for k in ("nodes", "links", "components", "sampled_origins")},
+                "critical_and_dangerous": [{k: v for k, v in r.items() if k not in ("lon", "lat")} for r in res["top"]],
+                "method": network_limits(),
+                "next": "road_closure_cascade(node='<node>') shows where trips detour if that intersection closes"}
+
+    @mcp.tool(annotations=RW)
+    @audited(WRITER)
+    def road_closure_cascade(node: str | int, juris: str | None = None, place: str | None = None,
+                             radius_miles: float | None = None, year_from: int | None = None,
+                             year_to: int | None = None, top: int = 10, title: str = "Closure cascade") -> dict:
+        """CASCADE: what if intersection `node` is closed (crash, construction, flooding)? Removes it from
+        the road network and reroutes the shortest trips: returns the links and intersections that
+        absorb the detoured trips, with their crash history (detour risk), and intersections cut off.
+        node: NODE id from find_intersection, crash_hotspots or crash_network. juris: the county or
+        city network to use (default: the node's own)."""
+        ensure_loaded()
+        node = str(node).strip()
+        if not node.isdigit():
+            raise ValueError("node must be a numeric NODE id (from find_intersection, crash_hotspots or crash_network)")
+        if not (juris or place):
+            hit = fetch("SELECT juris FROM crash.crashes WHERE node = %(n)s AND juris IS NOT NULL LIMIT 1", {"n": node})
+            if not hit:
+                raise ValueError(f"no crashes recorded at node {node}")
+            juris = hit[0]["juris"]
+        area = area_filters(juris, place, radius_miles)
+        f = {**area, **filters(year_from=year_from, year_to=year_to)}
+        g = network_graph(area, f)
+        res = cn.closure_cascade(g, node, max(1, min(int(top), 50)))
+        names = node_names([node] + [r["node"] for r in res["absorbing_intersections"]])
+        for r in res["absorbing_intersections"]:
+            r["location"] = names.get(r["node"]) or r["location"]
+        closed_name = names.get(node) or res["closed_location"]
+        h = g.copy()
+        h.remove_node(node)
+        cg = g.nodes[node]
+        layers = [
+            {"name": "Links with detoured trips (redder = more)", "lines": True, "color": "#94a3b8",
+             "color_field": "increase", "width_field": "increase", "ramp": LOAD_RAMP,
+             "geojson": fc(cn.link_features(h, res.pop("_gain"), "increase")),
+             "legend_note": f"{res['links_with_more_trips']:,} links carry more trips"},
+            {"name": "Intersections absorbing detours", "color": "#f97316", "size_field": "extra_trips",
+             "geojson": fc([{"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(r["lon"]), float(r["lat"])]},
+                             "properties": {k: v for k, v in r.items() if k not in ("lon", "lat")}}
+                            for r in res["absorbing_intersections"]])},
+            {"name": f"Closed: {closed_name}"[:90], "color": "#111827", "radius": 11,
+             "geojson": fc([{"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(cg["lon"]), float(cg["lat"])]},
+                             "properties": {"node": node, "location": closed_name, "crashes": cg.get("crashes")}}])},
+        ]
+        sc = scope(srv, f)
+        name = f"{srv.slug(title)}-{node}-{int(time.time())}.html"
+        srv.storage.put_text(name, srv.render_map(f"{title}: {closed_name}"[:120], layers, srv.MAP_BASEMAP, subtitle=sc))
+        for r in res["absorbing_intersections"]:
+            r.pop("lon", None), r.pop("lat", None)
+        res["closed_location"] = closed_name
+        return {"scope": sc, "url": f"{srv.MAP_VIEWER_URL}/maps/{name}", **res, "method": network_limits()}
+
+    FACTOR_SQL = {
+        "speed": ("Speeding", "speed"),
+        "alcohol": ("Alcohol", "alcohol"),
+        "distracted": ("Distracted", "distracted"),
+        "night": ("Night", "night"),
+        "dark_unlit": ("Dark, unlit road", "props->>'LIGHT_CONDITION' ILIKE '%%not lighted%%'"),
+        "young": ("Young driver", "props->>'YOUNG_NOTYOUNG' = 'Yes'"),
+        "senior": ("Senior driver", "props->>'SENIOR_NOTSENIOR' = 'Yes'"),
+        "pedestrian": ("Pedestrian", "pedestrian"),
+        "bike": ("Bicycle", "bike"),
+        "angle": ("Angle", "collision_type ILIKE '%%angle%%'"),
+        "rear end": ("Rear end", "collision_type ILIKE '%%rear end%%'"),
+        "road_departure": ("Road departure", "collision_type ILIKE '%%fixed object%%'"),
+        "deer": ("Deer / animal", "(collision_type ILIKE '%%deer%%' OR collision_type ILIKE '%%animal%%')"),
+    }
+
+    _state_cache: dict[str, tuple[float, dict]] = {}
+
+    def factor_counts(where: str, p: dict, cache: bool = False) -> dict:
+        """Factor counts; statewide ones (a full scan) are cached for an hour per year filter."""
+        key = where + repr(sorted(p.items()))
+        if cache and key in _state_cache and time.time() - _state_cache[key][0] < 3600:
+            return _state_cache[key][1]
+        cols = ", ".join(f"count(*) FILTER (WHERE {sql}) AS \"{key}\"" for key, (_, sql) in FACTOR_SQL.items())
+        cols += ", count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections"
+        row = fetch(f"SELECT count(*) AS total, {cols} FROM crash.crashes WHERE {where}", p)[0]
+        if cache:
+            _state_cache[key] = (time.time(), row)
+        return row
+
+    @mcp.tool(annotations=RW)
+    @audited(WRITER)
+    def crash_dashboard(juris: str | None = None, place: str | None = None, radius_miles: float | None = None,
+                        year_from: int | None = None, year_to: int | None = None, title: str | None = None) -> dict:
+        """Safety DASHBOARD page for a county/city (juris) or place + radius_miles: map (crashes by
+        severity + road network through-traffic), top 3 hot spot intersections, critical-and-dangerous
+        intersections (network), crash factors and collision types compared with statewide, crashes
+        by hour and weekday, key patterns, and FHWA countermeasure recommendations. Use for 'dashboard',
+        'report', 'overview of crashes in <county>', 'patterns and recommendations'."""
+        ensure_loaded()
+        area = area_filters(juris, place, radius_miles)
+        f = {**area, **filters(year_from=year_from, year_to=year_to)}
+        where, p = build_where(srv, f)
+        state_f = filters(year_from=year_from, year_to=year_to)
+        sw, sp = build_where(srv, state_f)
+        sc = scope(srv, f)
+        kp = fetch(f"""SELECT count(*) AS crashes, {sev_cols()}, coalesce(sum(persons_injured), 0) AS injured,
+                              count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections,
+                              count(*) FILTER (WHERE night AND severity IN ('K', 'A')) AS night_ka,
+                              count(*) FILTER (WHERE severity IN ('K', 'A')) AS ka,
+                              min(crash_year) AS first_year, max(crash_year) AS last_year
+                       FROM crash.crashes WHERE {where}""", p)[0]
+        if not kp["crashes"]:
+            raise ValueError("no crashes matched; check the county name or years")
+        here, state = factor_counts(where, p), factor_counts(sw, sp, cache=True)
+        fx = {key: {"label": label, "n": int(here[key]), "share": here[key] / max(1, here["total"]),
+                    "state_share": state[key] / max(1, state["total"])} for key, (label, _) in FACTOR_SQL.items()}
+        coll = fetch(f"""SELECT collision_type AS label, count(*) AS n FROM crash.crashes
+                         WHERE {where} AND coalesce(collision_type, '') NOT IN ('', 'Not Provided')
+                         GROUP BY 1 ORDER BY n DESC LIMIT 8""", p)
+        st = {r["label"]: r["n"] for r in fetch(
+            f"SELECT collision_type AS label, count(*) AS n FROM crash.crashes WHERE {sw} AND collision_type = ANY(%(cts)s) GROUP BY 1",
+            {**sp, "cts": [c["label"] for c in coll]})}
+        for c in coll:
+            c["share"], c["state_share"] = c["n"] / kp["crashes"], st.get(c["label"], 0) / max(1, state["total"])
+        hours = {r["h"]: r["n"] for r in fetch(
+            f"SELECT crash_hour AS h, count(*) AS n FROM crash.crashes WHERE {where} AND crash_hour BETWEEN 0 AND 23 GROUP BY 1", p)}
+        dows = {int(r["d"]): r["n"] for r in fetch(
+            f"SELECT extract(isodow FROM crash_dt) AS d, count(*) AS n FROM crash.crashes WHERE {where} AND crash_dt IS NOT NULL GROUP BY 1", p)}
+        routes = fetch(f"""SELECT route_label AS r, count(*) AS n FROM crash.crashes WHERE {where} AND route_label IS NOT NULL
+                           GROUP BY 1 ORDER BY n DESC LIMIT 3""", p)
+        hs = hotspots(3, "count", "intersection", 60, f)
+        names = node_names([h["node"] for h in hs])
+        for h in hs:
+            h["location"] = names.get(h["node"]) or h["location"]
+        try:
+            g = network_graph(area, f)
+            net = criticality_result(g, 5)
+        except ValueError:
+            g, net = None, None
+
+        by_hour = [int(hours.get(h, 0)) for h in range(24)]
+        by_dow = [int(dows.get(d, 0)) for d in range(1, 8)]
+        n = kp["crashes"]
+        peak = max(range(24), key=lambda h: by_hour[h])
+        rush = sum(by_hour[h] for h in (7, 8, 16, 17))
+        state_int = state["at_intersections"] / max(1, state["total"])
+        patterns = [
+            f"{kp['at_intersections'] / n:.0%} of crashes are at intersections (statewide {state_int:.0%}).",
+            f"Busiest hour: {peak}:00-{peak + 1}:00 ({by_hour[peak]:,} crashes); 7-9 am and 4-6 pm together hold {rush / n:.0%}.",
+            f"Night: {fx['night']['share']:.0%} of all crashes but {kp['night_ka'] / max(1, kp['ka']):.0%} of fatal and serious ones.",
+        ]
+        if coll:
+            kind = re.sub(r"^\s*\d+\.\s*", "", coll[0]["label"])
+            patterns.append(f"Most common collision: {kind} ({coll[0]['share']:.0%}).")
+        if routes:
+            patterns.append("Most crashes by route: " + ", ".join(f"{r['r']} ({r['n']:,})" for r in routes) + ".")
+        recs = dash.recommendations(fx, hs)
+        factor_rows = sorted((v for k, v in fx.items() if k in ("speed", "alcohol", "distracted", "night", "dark_unlit",
+                                                                   "young", "senior", "pedestrian", "bike")),
+                             key=lambda v: v["share"], reverse=True)
+
+        title = title or f"Crash safety dashboard: {sc.split(' · ')[0]}"
+        stamp = int(time.time())
+        map_name = f"{srv.slug(title)}-map-{stamp}.html"
+        layers = crash_layers(10, "count", f)
+        if g is not None:
+            layers = network_layers(g, net)[:1] + layers
+        srv.storage.put_text(map_name, srv.render_map("Crashes and road network", layers, srv.MAP_BASEMAP, subtitle=sc))
+        page = dash.render_dashboard({
+            "title": title, "scope": sc, "map_file": map_name,
+            "kpis": {**kp, "crashes": n}, "hotspots": hs, "network": net,
+            "factor_rows": factor_rows, "collisions": coll, "by_hour": by_hour, "by_dow": by_dow,
+            "patterns": patterns, "recommendations": recs,
+            "source": "Source: VDOT crash records (public ArcGIS layer, synced daily). " + network_limits()})
+        name = f"{srv.slug(title)}-{stamp}.html"
+        srv.storage.put_text(name, page)
+        return {"scope": sc, "url": f"{srv.MAP_VIEWER_URL}/maps/{name}",
+                "totals": {k: kp[k] for k in ("crashes", "k", "a", "b", "c", "o", "injured", "at_intersections")},
+                "top_hotspots": [{"node": h["node"], "location": h["location"], "crashes": h["crashes"]} for h in hs],
+                "critical_and_dangerous": [{"node": r["node"], "location": r["location"], "crashes": r["crashes"],
+                                            "score": r["critical_and_dangerous"]} for r in (net or {}).get("top", [])],
+                "patterns": patterns, "recommendations": [r["title"] + ": " + r["measures"] for r in recs]}

@@ -3,3 +3,4 @@ mcp==2.2.0
 pyjwt[crypto]==2.10.1
 psycopg[binary]==3.2.10
 ijson==3.6.0
+networkx==3.4.2

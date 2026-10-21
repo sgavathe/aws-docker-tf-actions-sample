@@ -252,3 +252,10 @@ def test_invented_map_links_are_removed():
     assert "[a](/maps/crash-analysis-1.html)" in out
     assert "crash-analysis-9" not in out and "crash-analysis-7" not in out
     assert out.count("no map was made") == 2
+
+
+def test_simple_schema_collapses_scalar_unions():
+    import agent
+    sch = {"type": "object", "properties": {"node": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}],
+                                                     "default": None, "title": "Node"}}}
+    assert agent.simple_schema(sch)["properties"]["node"] == {"type": "string"}

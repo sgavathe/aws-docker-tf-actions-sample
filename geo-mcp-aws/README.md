@@ -33,6 +33,23 @@ jobs Lambda (private subnets) ── crash loader: s3://…/import/ -> Aurora
 The app code in `app/` is the same as the enclave repo's, with these switches added.
 The tool behavior, roles, SQL guard and audit log are unchanged.
 
+## Crash analysis tools
+
+Beyond counts, hot spots (Gi\*), heat maps, clusters and intersection lookups:
+
+- **`crash_dashboard`**: one page per county or city: KPIs, the map (crashes + road network),
+  top hot spots, critical-and-dangerous intersections, crash factors and collision types against
+  the statewide shares, crashes by hour and weekday, key patterns, and FHWA Proven Safety
+  Countermeasure suggestions that cite the numbers behind them.
+- **`crash_network`**: the road graph built from VDOT's own records (intersection NODE + route
+  milepost; no extra data, works air-gapped). Ranks intersections by shortest-path betweenness
+  x crash severity (EPDO).
+- **`road_closure_cascade`**: close one intersection; shows which links and intersections take
+  the detoured trips (with their crash history) and which get cut off.
+
+Limits are stated in every result: only intersections that have had a crash become nodes, links
+are schematic straight lines, and through-traffic is betweenness, not measured volume.
+
 ## Security
 
 - **No stored credentials:**
