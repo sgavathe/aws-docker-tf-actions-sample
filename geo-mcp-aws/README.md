@@ -102,6 +102,8 @@ Prerequisites: terraform ≥ 1.5, Docker with buildx, Node 20+, Python 3 with bo
      --cli-binary-format raw-in-base64-out --payload '{"force":true}' /dev/null
    aws logs tail /aws/lambda/geo-devops-demo-geomcp-ingest --follow
    ```
+   The REST API returns coded values (county `74`); the sync decodes them to the same labels as
+   VDOT's file downloads (`074. Prince George County`) and keeps severity as K/A/B/C/O.
    The synced layer includes street names (`ROUTE_OR_STREET_NM`), so `find_intersection` accepts
    "Middle Road" and "Prince George Drive" as well as route numbers. Records VDOT deletes upstream
    are not deleted here (upsert only).

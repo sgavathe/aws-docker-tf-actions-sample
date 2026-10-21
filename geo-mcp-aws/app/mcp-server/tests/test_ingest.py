@@ -27,7 +27,13 @@ class FakeLayer(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
         if u.path.endswith("/0"):
-            body = {"editingInfo": {"dataLastEditDate": EDIT["value"]}, "maxRecordCount": 1000}
+            body = {"editingInfo": {"dataLastEditDate": EDIT["value"]}, "maxRecordCount": 1000, "fields": [
+                {"name": "PHYSICAL_JURIS", "domain": {"type": "codedValue", "codedValues": [
+                    {"name": "074. Prince George County", "code": "74"}]}},
+                {"name": "CRASH_SEVERITY", "domain": {"type": "codedValue", "codedValues": [
+                    {"name": "K. Fatal Injury", "code": "K"}]}},
+                {"name": "NIGHT", "domain": {"type": "codedValue", "codedValues": [
+                    {"name": "No", "code": "0"}, {"name": "Yes", "code": "1"}]}}]}
         else:
             after = int(q["where"].split(">")[1])
             assert q["orderByFields"] == "OBJECTID ASC" and q["outSR"] == "4326" and q["f"] == "geojson"
@@ -35,7 +41,8 @@ class FakeLayer(BaseHTTPRequestHandler):
             body = {"type": "FeatureCollection", "features": [
                 {"type": "Feature", "id": i, "geometry": {"type": "Point", "coordinates": [-77.3, 37.2]},
                  "properties": {"OBJECTID": i, "DOCUMENT_NBR": 100000 + i, "CRASH_DT": 1700000000000,
-                                "ROUTE_OR_STREET_NM": "MIDDLE RD"}} for i in ids]}
+                                "ROUTE_OR_STREET_NM": "MIDDLE RD", "PHYSICAL_JURIS": "74",
+                                "CRASH_SEVERITY": "K", "NIGHT": "1"}} for i in ids]}
         data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -90,6 +97,8 @@ def test_full_run_pages_writes_parts_and_starts_one_load(ingest):
     assert len(parts) == 3
     feats = [f for k in parts for f in json.loads(boto3.client("s3").get_object(Bucket="data", Key=k)["Body"].read())["features"]]
     assert [f["id"] for f in feats] == list(range(1, N + 1))   # every record exactly once, in order
+    p = feats[0]["properties"]
+    assert (p["PHYSICAL_JURIS"], p["CRASH_SEVERITY"], p["NIGHT"]) == ("074. Prince George County", "K", "Yes")
     assert invokes == [("jobs-fn", {"job": "load_crashes", "s3_prefix": f"s3://data/import/arcgis/{out['run']}/"})]
     # unchanged source: nothing fetched, nothing loaded
     assert m.handler({}, Ctx(10**9)) == {"ok": True, "skipped": "source unchanged"}
@@ -125,6 +134,20 @@ def test_new_edit_date_triggers_a_new_run(ingest):
     finally:
         EDIT["value"] -= 1
     assert sum(1 for f, _ in invokes if f == "jobs-fn") == 2
+
+
+def test_old_format_state_forces_one_resync(ingest):
+    m, invokes = ingest
+    m.handler({}, Ctx(10**9))
+    st = m.load_state(); st.pop("format"); m.save_state(st)    # a run from before domain decoding
+    assert m.handler({}, Ctx(10**9))["fetched"] == N
+    assert m.handler({}, Ctx(10**9)) == {"ok": True, "skipped": "source unchanged"}
+
+
+def test_severity_from_code_or_label():
+    from geo_mcp.load_crashes import severity
+    assert [severity(v) for v in ("K", "K. Fatal Injury", "PDO. Property Damage Only", "O", "", None)] == \
+        ["K", "K", "O", "O", None, None]
 
 
 @pytest.mark.parametrize("event", [

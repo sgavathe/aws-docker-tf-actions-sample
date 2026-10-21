@@ -85,6 +85,14 @@ def yes(v) -> bool | None:
     return str(v).strip().lower() in ("yes", "y", "true", "1")
 
 
+def severity(v) -> str | None:
+    """K/A/B/C/O from a code ('K') or a domain label ('K. Fatal Injury', 'PDO. Property Damage Only')."""
+    if v in (None, ""):
+        return None
+    head = str(v).split(".")[0].strip().upper()
+    return "O" if head == "PDO" else head[:1] or None
+
+
 def as_int(v) -> int | None:
     try:
         return int(float(v))
@@ -124,7 +132,7 @@ def row(feature: dict) -> list | None:
     return [
         str(key), as_int(p.get("CRASH_YEAR")), as_date(p.get("CRASH_DT")),
         hhmm // 100 if hhmm is not None and 0 <= hhmm <= 2400 else None,
-        (p.get("CRASH_SEVERITY") or None), as_int(p.get("K_PEOPLE")), as_int(p.get("A_PEOPLE")),
+        severity(p.get("CRASH_SEVERITY")), as_int(p.get("K_PEOPLE")), as_int(p.get("A_PEOPLE")),
         as_int(p.get("PERSONS_INJURED")), p.get("COLLISION_TYPE"),
         bool(node) or (ia != "" and not ia.lower().startswith("not")),
         str(node) if node not in (None, "") else None,
