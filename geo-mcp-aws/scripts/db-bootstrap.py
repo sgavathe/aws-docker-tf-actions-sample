@@ -41,14 +41,13 @@ ROLES_SQL = [
     "ALTER DEFAULT PRIVILEGES IN SCHEMA infra GRANT SELECT ON TABLES TO mcp_reader, mcp_writer",
     "ALTER DEFAULT PRIVILEGES IN SCHEMA work GRANT SELECT ON TABLES TO mcp_reader",
     "GRANT CREATE ON SCHEMA work TO mcp_writer",
-    # Crash data: owned by the loader role, readable by the app roles.
-    # PostgreSQL 16+: the RDS admin is not a superuser, so it must be a member of crash_loader to
-    # create a schema owned by it and to set that role's default privileges.
-    "GRANT crash_loader TO CURRENT_USER",
+    # Crash data: the admin owns the schema; the loader may create its table there and owns that
+    # table (it grants SELECT to the app roles itself). No role membership is granted to the admin:
+    # membership in an IAM-auth role would make the admin IAM-only too and lock out the Data API.
     "GRANT CREATE ON DATABASE geo TO crash_loader",
-    "CREATE SCHEMA IF NOT EXISTS crash AUTHORIZATION crash_loader",
+    "CREATE SCHEMA IF NOT EXISTS crash",
+    "GRANT USAGE, CREATE ON SCHEMA crash TO crash_loader",
     "GRANT USAGE ON SCHEMA crash TO mcp_reader, mcp_writer",
-    "ALTER DEFAULT PRIVILEGES FOR ROLE crash_loader IN SCHEMA crash GRANT SELECT ON TABLES TO mcp_reader, mcp_writer",
 ]
 
 
@@ -91,6 +90,10 @@ def main() -> int:
     print("==> roles, schemas, PostGIS")
     for sql in ROLES_SQL:
         db.run(sql)
+    # Guard: if the admin ever ends up inheriting rds_iam, RDS makes it IAM-only and this script
+    # (Data API, password from the RDS-managed secret) can no longer log in.
+    if db.scalar("SELECT pg_has_role(current_user, 'rds_iam', 'USAGE')"):
+        sys.exit("ERROR: the admin role inherits rds_iam; revoke that membership before re-running")
 
     if db.scalar("SELECT to_regclass('infra.substations') IS NOT NULL"):
         print("==> sample infrastructure already loaded")
