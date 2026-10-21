@@ -12,6 +12,7 @@ let mapOrigin = "";
 let busy = false;
 let traceN = 0;
 let webMapThisTurn = false;
+let dashThisTurn = false;   // a dashboard stays in the Map tab when a plain map arrives later in the same answer
 
 // POST bodies carry their SHA-256: in AWS, CloudFront signs requests to the chat Lambda (origin
 // access control) and needs the payload hash from the browser. Harmless locally.
@@ -110,7 +111,7 @@ function clearAll() {
   $("data").replaceChildren(); $("dataempty").hidden = false;
   $("trace").replaceChildren(); $("traceempty").hidden = false; traceN = 0; $("tracecount").textContent = "0";
   $("map").hidden = true; $("map").removeAttribute("src"); $("mapopen").hidden = true; $("mapempty").hidden = false;
-  $("propng").hidden = true; $("propdf").hidden = true; webMapThisTurn = false;
+  $("propng").hidden = true; $("propdf").hidden = true; webMapThisTurn = false; dashThisTurn = false;
 }
 
 /* ---------- tabs ---------- */
@@ -213,7 +214,7 @@ async function send() {
   if (!q || busy) return;
   busy = true; $("send").disabled = true; $("q").value = "";
   addMsg("user", q);
-  $("propng").hidden = true; $("propdf").hidden = true; webMapThisTurn = false;
+  $("propng").hidden = true; $("propdf").hidden = true; webMapThisTurn = false; dashThisTurn = false;
   const steps = el("div", "steps"); $("log").append(steps);
   const thinking = el("div", "thinking", "Thinking"); $("log").append(thinking);
   const chips = {};
@@ -300,7 +301,9 @@ function showResult(ev) {
   const isMapUrl = (u) => typeof u === "string" &&
     ((mapOrigin && u.startsWith(mapOrigin + "/")) || /^\/maps\/[\w.\-\/]+$/.test(u));
   if (d && typeof d === "object" && isMapUrl(d.url)) {
-    showMap(d.url); webMapThisTurn = true;
+    const isDash = /dashboard/i.test(d.url);
+    if (isDash || !dashThisTurn) showMap(d.url);
+    dashThisTurn = dashThisTurn || isDash; webMapThisTurn = true;
   } else if (d && typeof d === "object" && Array.isArray(d.copied_to_host)) {
     // Keep the interactive web map in the tab; the Pro layout (static PNG/PDF) goes in the links.
     const png = proFile(d, ".png"), pdf = proFile(d, ".pdf");

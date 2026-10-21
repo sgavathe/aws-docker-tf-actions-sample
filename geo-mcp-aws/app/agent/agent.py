@@ -151,6 +151,29 @@ def checked_links(text: str, made: set[str]) -> str:
     return _MAP_LINK.sub(repl, text or "")
 
 
+TOOL_LINK_LABEL = {"crash_dashboard": "dashboard", "crash_network": "road network map",
+                   "road_closure_cascade": "closure map", "map_crashes": "crash map", "make_web_map": "map",
+                   "export_crashes_for_pro": "map"}
+
+
+def linked_calls(text: str, written: re.Pattern | None, urls: dict[str, str]) -> tuple[str, list[str]]:
+    """Replace tool calls the model typed as text (e.g. '[crash_dashboard(juris="X")]') with a link
+    to what that tool returned this turn. Returns the text and the typed tools that never ran."""
+    if not written or not text:
+        return text, []
+    missing: list[str] = []
+    names = written.pattern[3:-6]   # the tool-name alternation inside r"\b(...)\s*\("
+    pat = re.compile(r"(?:\[\s*)?\b(" + names + r")\s*\([^()]*\)(?:\s*\])?(?:\([^)\s]*\))?")
+
+    def repl(m):
+        tool = m.group(1)
+        if tool in urls:
+            return f"[{TOOL_LINK_LABEL.get(tool, 'result')}]({urls[tool]})"
+        missing.append(tool)
+        return m.group(0)
+    return pat.sub(repl, text), missing
+
+
 def describe(exc: BaseException) -> str:
     """Innermost exception as 'Type: message' (unwraps anyio ExceptionGroups; AWS errors show their code)."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -328,6 +351,7 @@ async def agent_events(token: str, messages: list[dict]):
     failed_calls: dict[str, int] = {}   # tool + exact arguments -> failures this turn
     failed_tools: dict[str, int] = {}   # tool -> failures this turn
     nudged = False
+    tool_urls: dict[str, str] = {}   # tool -> the url it returned this turn (for typed-call links)
     async with AsyncExitStack() as stack:
         sessions = await open_servers(stack, token)
         routes, tools = await tool_catalog(sessions)
@@ -344,14 +368,14 @@ async def agent_events(token: str, messages: list[dict]):
             messages.append(msg)
             calls = msg.get("tool_calls") or []
             if not calls:
-                text = msg.get("content", "")
-                hit = written_call.search(text) if written_call else None
-                if hit and not nudged:   # the model typed a tool call instead of making it: ask once to call it
+                text, never_ran = linked_calls(msg.get("content", ""), written_call, tool_urls)
+                if never_ran and not nudged:   # typed a call to a tool that never ran: ask once to call it
                     nudged = True
                     messages.append({"role": "user", "content": (
-                        f"[agent note] Your answer contains a tool call written as text ({hit.group(1)}(...)). "
+                        f"[agent note] Your answer contains a tool call written as text ({never_ran[0]}(...)). "
                         "Do not write tool calls in the answer: call the tool now, then answer.")})
                     continue
+                msg["content"] = text
                 yield {"type": "answer", "content": checked_links(text, made)}
                 return
             stop = None
@@ -388,6 +412,8 @@ async def agent_events(token: str, messages: list[dict]):
                         stop = (f"I couldn't complete this: {fn['name']} failed {failed_tools[fn['name']]} times. "
                                 f"Last error: {reason}")
                 made.update(MAP_PATH.findall(out))
+                if isinstance(data, dict) and isinstance(data.get("url"), str):
+                    tool_urls[fn["name"]] = data["url"]
                 yield {"type": "tool_result", "tool": fn["name"], "is_error": is_error,
                        "data": data, "text": None if data is not None else out[:4000]}
                 messages.append({"role": "tool", "tool_name": fn["name"], "tool_call_id": call["id"], "content": out})

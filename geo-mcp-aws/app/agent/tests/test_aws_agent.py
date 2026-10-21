@@ -317,11 +317,15 @@ class _Res:
     def __init__(self, text, err=False):
         from types import SimpleNamespace
         self.content = [SimpleNamespace(type="text", text=text)]
-        self.structured_content = None if err else {"result": {"url": "/maps/m-1.html"}}
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = {"url": "/maps/m-1.html"}
+        self.structured_content = None if err else {"result": parsed}
         self.is_error = err
 
 
-def _run_agent(monkeypatch, replies, tool):
+def _run_agent(monkeypatch, replies, tool, names=("make_web_map", "map_crashes")):
     import asyncio
     import agent
     script = iter(replies)
@@ -337,7 +341,7 @@ def _run_agent(monkeypatch, replies, tool):
         return {"geo": Session()}
 
     async def fake_catalog(sessions):
-        return ({"make_web_map": sessions["geo"], "map_crashes": sessions["geo"]}, [])
+        return ({n: sessions["geo"] for n in names}, [])
 
     monkeypatch.setattr(agent, "chat", fake_chat)
     monkeypatch.setattr(agent, "open_servers", fake_open)
@@ -444,3 +448,21 @@ def test_budget_alerts_once_per_threshold_per_day(aws_app, monkeypatch):
     assert sent == ["Geo demo: 80% of today's budget used"]
     chat_app.QUOTA.add_spend(0.2); chat_app._spend_alerts(); chat_app._spend_alerts()
     assert sent == ["Geo demo: 80% of today's budget used", "Geo demo: 100% of today's budget used"]
+
+
+def test_typed_calls_become_links_without_rerunning(monkeypatch):
+    replies = [_call("crash_dashboard", {"juris": "Prince George"}, 1),
+               {"role": "assistant", "content": 'Done. Dashboard: [crash_dashboard(juris="Prince George")] '
+                                                'and map: [map_crashes(juris="X")](map_crashes(juris="X"))'},
+               _call("map_crashes", {"juris": "X"}, 2),
+               {"role": "assistant", "content": 'Dashboard: [crash_dashboard(juris="Prince George")] map: map_crashes(juris="X")'}]
+    import agent
+    urls = {"crash_dashboard": "/maps/pg-dashboard-1.html", "map_crashes": "/maps/x-2.html"}
+
+    def tool(name, args):
+        return _Res(json.dumps({"url": urls[name]}))
+
+    events, _ = _run_agent(monkeypatch, replies, tool, names=("crash_dashboard", "map_crashes"))
+    assert [e["tool"] for e in events if e["type"] == "tool_call"] == ["crash_dashboard", "map_crashes"]   # each once
+    answer = [e for e in events if e["type"] == "answer"][0]["content"]
+    assert answer == "Dashboard: [dashboard](/maps/pg-dashboard-1.html) map: [crash map](/maps/x-2.html)"
