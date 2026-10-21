@@ -291,6 +291,8 @@ def bedrock_chat(messages, tools) -> dict:
     msg = {"role": "assistant", "content": answer}
     if calls:
         msg["tool_calls"] = calls
+    u = resp.get("usage") or {}
+    msg["_usage"] = {"input": int(u.get("inputTokens", 0)), "output": int(u.get("outputTokens", 0))}
     return msg
 
 
@@ -324,6 +326,9 @@ async def agent_events(token: str, messages: list[dict]):
         yield {"type": "start", "model": MODEL, "servers": list(sessions), "tools": len(tools)}
         for _ in range(MAX_STEPS):
             msg = await chat([{"role": "system", "content": system_prompt(sessions)}] + messages, tools)
+            usage = msg.pop("_usage", None)
+            if usage:
+                yield {"type": "usage", **usage}   # consumed by the chat app (spend cap), not shown
             for c in msg.get("tool_calls") or []:
                 c.setdefault("id", f"call_{uuid.uuid4().hex[:12]}")   # Bedrock pairs results by id
             messages.append(msg)

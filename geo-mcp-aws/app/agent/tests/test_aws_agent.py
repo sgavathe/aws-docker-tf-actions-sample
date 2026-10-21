@@ -260,3 +260,52 @@ def test_simple_schema_collapses_scalar_unions():
     sch = {"type": "object", "properties": {"node": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}],
                                                      "default": None, "title": "Node"}}}
     assert agent.simple_schema(sch)["properties"]["node"] == {"type": "string"}
+
+
+# ---------------------------------------------------------------- demo limits
+
+def test_quota_limits_and_spend(monkeypatch):
+    import quota
+    monkeypatch.setattr(quota, "DAILY_BUDGET_USD", 1.0)
+    monkeypatch.setattr(quota, "DEMO_DAILY_QUESTIONS", 2)
+    monkeypatch.setattr(quota, "EXEMPT", {"owner"})
+    q = quota.Quota(quota.MemoryQuota())
+    assert q.blocked("guest", demo=True) is None
+    q.count_question("guest"); q.count_question("guest")
+    assert "2 questions" in q.blocked("guest", demo=True)
+    assert q.blocked("Guest", demo=False) is None                      # other users: higher limit
+    assert abs(quota.model_cost(1_000_000, 1_000_000) - 0.30) < 1e-9   # Nova Lite 0.06 in + 0.24 out
+    q.add_spend(0.99); assert q.blocked("other", demo=False) is None
+    q.add_spend(0.02)
+    assert "usage budget" in q.blocked("other", demo=False) and q.search_blocked("other")
+    assert q.blocked("owner", demo=True) is None and not q.search_blocked("owner")   # exempt
+    assert q.status("guest", True)["questions_left"] == 0
+
+
+def test_chat_stops_at_daily_budget_without_calling_the_model(aws_app, monkeypatch):
+    c, chat_app = aws_app
+    import quota
+    monkeypatch.setattr(quota, "DAILY_BUDGET_USD", 0.01)
+    calls = []
+
+    async def fake_events(token, messages):
+        calls.append(1)
+        yield {"type": "usage", "input": 100_000, "output": 10_000}     # $0.0084
+        yield {"type": "usage", "input": 100_000, "output": 10_000}     # total $0.0168 > $0.01
+        yield {"type": "answer", "content": "ok"}
+
+    monkeypatch.setattr(chat_app, "agent_events", fake_events)
+    monkeypatch.setattr(chat_app, "_fresh_token", lambda s: _done("tok"))
+    c.post("/api/login", json={"username": "analyst", "password": "Str0ng!Passw0rd"})
+    r1 = c.post("/api/chat", json={"message": "q1"})
+    lines = [json.loads(l) for l in r1.text.splitlines() if l.strip()]
+    assert [l["type"] for l in lines if l["type"] != "ping"] == ["answer"]       # usage events not sent
+    assert c.get("/api/me").json()["quota"]["site_spent_usd"] > 0.01
+    r2 = c.post("/api/chat", json={"message": "q2"})
+    assert "usage budget" in r2.text and len(calls) == 1                         # model not called again
+    monkeypatch.setattr(chat_app, "GEOCODE_PROVIDER", "amazon-location")
+    assert c.post("/api/geocode", json={"q": "Hopewell VA"}).status_code == 429
+
+
+async def _done(v):
+    return v

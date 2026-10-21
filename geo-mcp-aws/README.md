@@ -92,6 +92,20 @@ are schematic straight lines, and through-traffic is betweenness, not measured v
 | Route 53 zone (already exists for map.spatialenable.com) | $0 extra |
 
 There is no NAT gateway, ALB, interface endpoint, public IPv4 address or always-on compute.
+
+### Opening the demo to others: limits
+
+- **Daily, in the app** (`terraform/limits.tf`, `app/agent/quota.py`): a site-wide cap on estimated
+  model + search spend (`daily_budget_usd`, default **$1/day**, from Bedrock's own token counts),
+  and per-user question limits: `demo_daily_questions` (30) for guests in the `geo-demo` group,
+  `user_daily_questions` (200) for others. Over a limit the chat says so and never calls the model.
+  Days are UTC. Exempt yourself with `TF_VAR_quota_exempt_users=analyst`.
+- **Monthly hard stop** (needs `BUDGET_EMAIL`): when the account's actual monthly cost passes
+  `hard_stop_usd` ($20), AWS Budgets attaches a deny policy to the chat role (no model calls or
+  searches) and emails you. Detach `geo-devops-demo-geomcp-chat-hard-stop` from the chat role to resume.
+- Guests: `./geo-mcp-aws/scripts/users.sh guest1 demo` (maps and dashboards, 30 questions a day).
+- If you change `bedrock_model_id`, set `bedrock_price_in_per_mtok` / `bedrock_price_out_per_mtok`
+  to that model's prices so the daily cap stays accurate.
 Set `BUDGET_EMAIL` to get a budget alarm (default $10).
 
 Aurora pauses after 10 idle minutes. The first question after a pause waits about 15 seconds

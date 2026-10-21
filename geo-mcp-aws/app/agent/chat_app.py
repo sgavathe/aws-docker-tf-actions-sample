@@ -41,6 +41,7 @@ import sys
 import traceback
 
 from agent import agent_events, describe
+import quota as quota_mod
 
 AUTH_PROVIDER = os.environ.get("AUTH_PROVIDER", "keycloak")
 TOKEN_URL = os.environ.get("KEYCLOAK_TOKEN_URL", "")
@@ -107,6 +108,8 @@ class DynamoSessions:
 
 
 SESSIONS = DynamoSessions(SESSION_TABLE) if SESSION_TABLE else MemorySessions()
+QUOTA = quota_mod.Quota(quota_mod.DynamoQuota(SESSION_TABLE) if SESSION_TABLE else quota_mod.MemoryQuota())
+DEMO_GROUP = "geo-demo"   # guest accounts: tighter daily question limit
 
 app = FastAPI(title="Geo MCP chat", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -234,9 +237,12 @@ async def login(body: Login, request: Request, response: Response):
     _require_json(request)
     tokens = _store(await _token_request(
         {"grant_type": "password", "username": body.username, "password": body.password}))
-    user, roles = _user_roles(_claims(tokens["access_token"]), body.username)
+    claims = _claims(tokens["access_token"])
+    user, roles = _user_roles(claims, body.username)
+    demo = DEMO_GROUP in (claims.get("cognito:groups") or claims.get("realm_access", {}).get("roles") or [])
     sid = secrets.token_urlsafe(32)
-    SESSIONS.put(sid, {"tokens": tokens, "user": user, "roles": roles, "messages": [], "seen": time.time()})
+    SESSIONS.put(sid, {"tokens": tokens, "user": user, "roles": roles, "demo": demo, "messages": [],
+                       "seen": time.time()})
     response.set_cookie(COOKIE, sid, httponly=True, samesite="strict", max_age=SESSION_TTL, secure=COOKIE_SECURE)
     return {"user": user, "roles": roles, "map_origin": MAP_ORIGIN}
 
@@ -244,7 +250,8 @@ async def login(body: Login, request: Request, response: Response):
 @app.get("/api/me")
 async def me(request: Request):
     _, s = _session(request)
-    return {"user": s["user"], "roles": s["roles"], "map_origin": MAP_ORIGIN}
+    return {"user": s["user"], "roles": s["roles"], "map_origin": MAP_ORIGIN,
+            "quota": QUOTA.status(s["user"], s.get("demo", False))}
 
 
 @app.post("/api/logout")
@@ -302,6 +309,11 @@ async def _with_pings(events, every: float = 15.0):
 async def ask(body: Ask, request: Request):
     _require_json(request)
     sid, s = _session(request)
+    reason = QUOTA.blocked(s["user"], s.get("demo", False))
+    if reason:   # over a daily limit: answer without calling the model
+        return StreamingResponse(iter([json.dumps({"type": "answer", "content": reason}) + "\n"]),
+                                 media_type="application/x-ndjson")
+    QUOTA.count_question(s["user"])
     token = await _fresh_token(s)
     s["messages"].append({"role": "user", "content": body.message})
     SESSIONS.put(sid, s)
@@ -309,6 +321,12 @@ async def ask(body: Ask, request: Request):
     async def stream():
         try:
             async for ev in _with_pings(agent_events(token, s["messages"])):
+                if ev.get("type") == "usage":   # Bedrock tokens -> today's spend; not sent to the browser
+                    try:
+                        QUOTA.add_spend(quota_mod.model_cost(ev["input"], ev["output"]))
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
+                    continue
                 yield json.dumps(ev, default=str) + "\n"
         finally:
             # Keep the conversation bounded; tool outputs are the bulk of it.
@@ -345,9 +363,12 @@ def _place_rows(items: list[dict]) -> list[dict]:
 @app.post("/api/geocode")
 async def geocode(body: Geo, request: Request):
     _require_json(request)
-    _session(request)
+    _, s = _session(request)
     if GEOCODE_PROVIDER != "amazon-location":
         raise HTTPException(404)
+    if QUOTA.search_blocked(s["user"]):
+        raise HTTPException(429, "Daily demo budget reached")
+    QUOTA.add_spend(quota_mod.GEOCODE_PRICE)
     global _places
     if _places is None:
         import boto3

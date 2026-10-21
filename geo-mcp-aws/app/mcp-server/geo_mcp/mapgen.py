@@ -173,7 +173,8 @@ function addressSearch(map) {{
       list.replaceChildren();
       if (!data.results.length) {{
         list.append(Object.assign(document.createElement('li'), {{className: 'msg',
-          textContent: r.status === 401 ? 'Sign in again to search' : 'No match'}}));
+          textContent: r.status === 401 ? 'Sign in again to search'
+            : r.status === 429 ? "Today's demo budget is used up" : 'No match'}}));
         return;
       }}
       if (data.results.length === 1) return show(data.results[0]);

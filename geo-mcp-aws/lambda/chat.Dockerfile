@@ -11,7 +11,7 @@ RUN useradd --uid 10001 --create-home app
 WORKDIR /app
 COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links /wheels /wheels/* && rm -rf /wheels
-COPY agent.py chat_app.py ./
+COPY agent.py chat_app.py quota.py ./
 COPY static ./static
 # response_stream: the NDJSON progress events reach the browser as they happen
 ENV HOME=/tmp PYTHONUNBUFFERED=1 PORT=8080 AWS_LWA_PORT=8080 \

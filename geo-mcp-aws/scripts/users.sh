@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Create (or reset) a chat user. The password is typed at a hidden prompt and goes straight to
 # Cognito through boto3: never on a command line, in shell history, on disk or in the repo.
-#   geo-mcp-aws/scripts/users.sh <username> reader|writer
+#   geo-mcp-aws/scripts/users.sh <username> reader|writer|demo
+#   demo = a guest: can make maps and dashboards, limited to var.demo_daily_questions a day
 set -euo pipefail
-USER_NAME="${1:?usage: users.sh <username> reader|writer}"
-LEVEL="${2:?usage: users.sh <username> reader|writer}"
+USER_NAME="${1:?usage: users.sh <username> reader|writer|demo}"
+LEVEL="${2:?usage: users.sh <username> reader|writer|demo}"
 TF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../terraform" && pwd)"
 POOL="$(terraform -chdir="$TF_DIR" output -raw user_pool_id)"
 
 case "$LEVEL" in
-  reader|writer) ;;
-  *) echo "level must be reader or writer"; exit 2 ;;
+  reader|writer|demo) ;;
+  *) echo "level must be reader, writer or demo"; exit 2 ;;
 esac
 
 python3 - "$POOL" "$USER_NAME" "$LEVEL" <<'EOF'
@@ -20,7 +21,8 @@ import sys
 import boto3
 
 pool, user, level = sys.argv[1:4]
-groups = ["geo-reader"] + (["geo-writer"] if level == "writer" else [])
+groups = {"reader": ["geo-reader"], "writer": ["geo-reader", "geo-writer"],
+          "demo": ["geo-reader", "geo-writer", "geo-demo"]}[level]
 pw = getpass.getpass(f"Password for {user} (14+ chars, upper, lower, number, symbol): ")
 if pw != getpass.getpass("Again: "):
     sys.exit("Passwords differ")

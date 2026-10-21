@@ -253,7 +253,7 @@ resource "aws_iam_role_policy" "chat" {
       {
         Sid      = "Sessions"
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem"] # UpdateItem: daily quota counters
         Resource = aws_dynamodb_table.sessions.arn
       },
       {
@@ -297,6 +297,13 @@ resource "aws_lambda_function" "chat" {
       MCP_AUTH_MODE     = "sigv4"
       MAX_STEPS         = "10"
       GEOCODE_PROVIDER  = "amazon-location" # /api/geocode for the map search box
+      # Daily limits (limits.tf, app/agent/quota.py)
+      DAILY_BUDGET_USD           = tostring(var.daily_budget_usd)
+      DEMO_DAILY_QUESTIONS       = tostring(var.demo_daily_questions)
+      USER_DAILY_QUESTIONS       = tostring(var.user_daily_questions)
+      QUOTA_EXEMPT_USERS         = var.quota_exempt_users
+      BEDROCK_PRICE_IN_PER_MTOK  = tostring(var.bedrock_price_in_per_mtok)
+      BEDROCK_PRICE_OUT_PER_MTOK = tostring(var.bedrock_price_out_per_mtok)
     }
   }
 
