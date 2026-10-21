@@ -123,7 +123,10 @@ async def security_headers(request: Request, call_next):
     if COOKIE_SECURE:
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "no-referrer"
+    # Map pages send only the site origin (no path) so tile servers can identify the app:
+    # OpenStreetMap's tile policy blocks requests that carry no Referer.
+    resp.headers["Referrer-Policy"] = ("strict-origin-when-cross-origin" if request.url.path.startswith("/maps/")
+                                       else "no-referrer")
     resp.headers["Cache-Control"] = "no-store"
     return resp
 

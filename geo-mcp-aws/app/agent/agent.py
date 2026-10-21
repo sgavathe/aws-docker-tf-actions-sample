@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import uuid
 from contextlib import AsyncExitStack
@@ -244,7 +245,9 @@ def bedrock_chat(messages, tools) -> dict:
         elif "toolUse" in b:
             u = b["toolUse"]
             calls.append({"id": u["toolUseId"], "function": {"name": u["name"], "arguments": u.get("input") or {}}})
-    msg = {"role": "assistant", "content": "\n".join(text)}
+    # Some models (Amazon Nova) write their reasoning in <thinking> tags; show only the answer.
+    answer = re.sub(r"<thinking>.*?</thinking>\s*", "", "\n".join(text), flags=re.S).strip()
+    msg = {"role": "assistant", "content": answer}
     if calls:
         msg["tool_calls"] = calls
     return msg

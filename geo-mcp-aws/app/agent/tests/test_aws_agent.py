@@ -172,3 +172,25 @@ def test_simple_schema_flattens_optional():
     assert out["properties"]["title"] == {"type": "string", "default": "Crash analysis"}   # a parameter named title stays
     assert len(out["properties"]["severity"]["anyOf"]) == 2          # real unions are kept, minus null
     assert "title" not in out and out["properties"]["top"] == {"type": "integer", "default": 10}
+
+
+def test_thinking_tags_are_stripped(monkeypatch):
+    import agent
+    from botocore.stub import Stubber
+    client = boto3.client("bedrock-runtime")
+    st = Stubber(client)
+    st.add_response("converse", {
+        "output": {"message": {"role": "assistant", "content": [
+            {"text": "<thinking>I made a map.</thinking>\n\nHere is the map: /maps/x.html"}]}},
+        "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        "metrics": {"latencyMs": 1}})
+    st.activate()
+    monkeypatch.setattr(agent, "_bedrock", client)
+    assert agent.bedrock_chat([{"role": "user", "content": "hi"}], [])["content"] == "Here is the map: /maps/x.html"
+
+
+def test_map_pages_send_origin_referrer(aws_app):
+    c, _ = aws_app
+    c.post("/api/login", json={"username": "analyst", "password": "Str0ng!Passw0rd"})
+    assert c.get("/maps/crash-1.html").headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert c.get("/api/me").headers["referrer-policy"] == "no-referrer"
