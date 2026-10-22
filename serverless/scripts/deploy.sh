@@ -38,6 +38,11 @@ IMAGE="$REPO_URI:$TAG"
 
 echo "==> [3/6] build + push Lambda image $IMAGE"
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+# Sign in to ECR Public too: anonymous pulls of public.ecr.aws base images (the Lambda Web Adapter)
+# share a data quota across CI runners and fail with 429 "Data limit exceeded". Best effort.
+aws ecr-public get-login-password --region us-east-1 2>/dev/null \
+  | docker login --username AWS --password-stdin public.ecr.aws >&2 \
+  || echo "    (ECR Public sign-in unavailable; pulling public images anonymously)" >&2
 # linux/amd64 to match the function's x86_64 architecture (also on Apple Silicon).
 # No provenance/SBOM attestations: Lambda rejects image indexes that carry them.
 docker buildx build \

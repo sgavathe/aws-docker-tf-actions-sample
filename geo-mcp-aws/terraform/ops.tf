@@ -63,6 +63,13 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = "*"
       },
       {
+        # Signed-in pulls of public.ecr.aws base images (anonymous pulls hit a shared 429 quota)
+        Sid      = "EcrPublicLogin"
+        Effect   = "Allow"
+        Action   = ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"]
+        Resource = "*"
+      },
+      {
         Sid    = "EcrPushThisRepo"
         Effect = "Allow"
         Action = [
