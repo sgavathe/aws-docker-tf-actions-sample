@@ -695,6 +695,7 @@ def register(mcp, srv) -> None:
     from . import crash_dashboard as dash, crash_network as cn
 
     NET_MAX_NODES = 8000
+    NET_TIME_BUDGET = float(os.environ.get("DASHBOARD_NETWORK_BUDGET_S", "60"))   # seconds already spent
     LOAD_RAMP = [[0, "#cbd5e1"], [0.15, "#fdba74"], [0.4, "#f97316"], [1, "#b91c1c"]]
 
     def area_filters(juris, place, radius_miles) -> dict:
@@ -852,35 +853,39 @@ def register(mcp, srv) -> None:
         res["closed_location"] = closed_name
         return {"scope": sc, "url": f"{srv.MAP_VIEWER_URL}/maps/{name}", **res, "method": network_limits()}
 
-    FACTOR_SQL = {
-        "speed": ("Speeding", "speed"),
-        "alcohol": ("Alcohol", "alcohol"),
-        "distracted": ("Distracted", "distracted"),
-        "night": ("Night", "night"),
-        "dark_unlit": ("Dark, unlit road", "props->>'LIGHT_CONDITION' ILIKE '%%not lighted%%'"),
-        "young": ("Young driver", "props->>'YOUNG_NOTYOUNG' = 'Yes'"),
-        "senior": ("Senior driver", "props->>'SENIOR_NOTSENIOR' = 'Yes'"),
-        "pedestrian": ("Pedestrian", "pedestrian"),
-        "bike": ("Bicycle", "bike"),
-        "angle": ("Angle", "collision_type ILIKE '%%angle%%'"),
-        "rear end": ("Rear end", "collision_type ILIKE '%%rear end%%'"),
-        "road_departure": ("Road departure", "collision_type ILIKE '%%fixed object%%'"),
-        "deer": ("Deer / animal", "(collision_type ILIKE '%%deer%%' OR collision_type ILIKE '%%animal%%')"),
-    }
+    from .crash_stats import FACTORS as FACTOR_SQL, factor_columns
 
     _state_cache: dict[str, tuple[float, dict]] = {}
 
-    def factor_counts(where: str, p: dict, cache: bool = False) -> dict:
-        """Factor counts; statewide ones (a full scan) are cached for an hour per year filter."""
-        key = where + repr(sorted(p.items()))
-        if cache and key in _state_cache and time.time() - _state_cache[key][0] < 3600:
+    _state_cache: dict[str, tuple[float, dict]] = {}
+
+    def factor_counts(where: str, p: dict) -> dict:
+        cols = factor_columns() + ", count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections"
+        return fetch(f"SELECT count(*) AS total, {cols} FROM crash.crashes WHERE {where}", p)[0]
+
+    def statewide(year_from, year_to) -> tuple[dict, dict]:
+        """Statewide factor counts and collision-type counts for the years, from the per-year tables
+        the loader keeps (fast); a live scan only when those tables don't exist yet."""
+        key = f"{year_from}-{year_to}"
+        if key in _state_cache and time.time() - _state_cache[key][0] < 3600:
             return _state_cache[key][1]
-        cols = ", ".join(f"count(*) FILTER (WHERE {sql}) AS \"{key}\"" for key, (_, sql) in FACTOR_SQL.items())
-        cols += ", count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections"
-        row = fetch(f"SELECT count(*) AS total, {cols} FROM crash.crashes WHERE {where}", p)[0]
-        if cache:
-            _state_cache[key] = (time.time(), row)
-        return row
+        p = {"y0": int(year_from or 0), "y1": int(year_to or 9999)}
+        try:
+            cols = ", ".join(f"coalesce(sum({k}), 0) AS {k}" for k in FACTOR_SQL)
+            fac = fetch(f"SELECT coalesce(sum(total), 0) AS total, coalesce(sum(at_intersections), 0) AS at_intersections, "
+                        f"{cols} FROM crash.year_stats WHERE crash_year BETWEEN %(y0)s AND %(y1)s", p)[0]
+            coll = {r["t"]: int(r["n"]) for r in fetch(
+                "SELECT collision_type AS t, sum(n) AS n FROM crash.year_collisions "
+                "WHERE crash_year BETWEEN %(y0)s AND %(y1)s GROUP BY 1", p)}
+            if not fac["total"]:
+                raise LookupError("stats tables empty")
+        except Exception:   # older load without crash.year_stats: scan once, then cache
+            sw, sp = build_where(srv, filters(year_from=year_from, year_to=year_to))
+            fac = factor_counts(sw, sp)
+            coll = {r["t"]: int(r["n"]) for r in fetch(
+                f"SELECT collision_type AS t, count(*) AS n FROM crash.crashes WHERE {sw} GROUP BY 1", sp)}
+        _state_cache[key] = (time.time(), (fac, coll))
+        return fac, coll
 
     @mcp.tool(annotations=RW)
     @audited(WRITER)
@@ -895,8 +900,7 @@ def register(mcp, srv) -> None:
         area = area_filters(juris, place, radius_miles)
         f = {**area, **filters(year_from=year_from, year_to=year_to)}
         where, p = build_where(srv, f)
-        state_f = filters(year_from=year_from, year_to=year_to)
-        sw, sp = build_where(srv, state_f)
+        t0 = time.time()
         sc = scope(srv, f)
         kp = fetch(f"""SELECT count(*) AS crashes, {sev_cols()}, coalesce(sum(persons_injured), 0) AS injured,
                               count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections,
@@ -906,17 +910,15 @@ def register(mcp, srv) -> None:
                        FROM crash.crashes WHERE {where}""", p)[0]
         if not kp["crashes"]:
             raise ValueError("no crashes matched; check the county name or years")
-        here, state = factor_counts(where, p), factor_counts(sw, sp, cache=True)
+        here = factor_counts(where, p)
+        state, state_coll = statewide(year_from, year_to)
         fx = {key: {"label": label, "n": int(here[key]), "share": here[key] / max(1, here["total"]),
                     "state_share": state[key] / max(1, state["total"])} for key, (label, _) in FACTOR_SQL.items()}
         coll = fetch(f"""SELECT collision_type AS label, count(*) AS n FROM crash.crashes
                          WHERE {where} AND coalesce(collision_type, '') NOT IN ('', 'Not Provided')
                          GROUP BY 1 ORDER BY n DESC LIMIT 8""", p)
-        st = {r["label"]: r["n"] for r in fetch(
-            f"SELECT collision_type AS label, count(*) AS n FROM crash.crashes WHERE {sw} AND collision_type = ANY(%(cts)s) GROUP BY 1",
-            {**sp, "cts": [c["label"] for c in coll]})}
         for c in coll:
-            c["share"], c["state_share"] = c["n"] / kp["crashes"], st.get(c["label"], 0) / max(1, state["total"])
+            c["share"], c["state_share"] = c["n"] / kp["crashes"], state_coll.get(c["label"], 0) / max(1, state["total"])
         hours = {r["h"]: r["n"] for r in fetch(
             f"SELECT crash_hour AS h, count(*) AS n FROM crash.crashes WHERE {where} AND crash_hour BETWEEN 0 AND 23 GROUP BY 1", p)}
         dows = {int(r["d"]): r["n"] for r in fetch(
@@ -927,11 +929,13 @@ def register(mcp, srv) -> None:
         names = node_names([h["node"] for h in hs])
         for h in hs:
             h["location"] = names.get(h["node"]) or h["location"]
-        try:
-            g = network_graph(area, f)
-            net = criticality_result(g, 5)
-        except ValueError:
-            g, net = None, None
+        g, net = None, None
+        if time.time() - t0 < NET_TIME_BUDGET:   # the road network is the slow part: skip it rather than time out
+            try:
+                g = network_graph(area, f)
+                net = criticality_result(g, 5)
+            except ValueError:
+                g, net = None, None
 
         by_hour = [int(hours.get(h, 0)) for h in range(24)]
         by_dow = [int(dows.get(d, 0)) for d in range(1, 8)]

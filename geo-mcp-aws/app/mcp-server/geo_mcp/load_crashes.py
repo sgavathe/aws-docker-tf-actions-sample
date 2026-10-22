@@ -161,11 +161,23 @@ def flush(cur, rows: list[list], srid: int) -> None:
             ON CONFLICT (document_nbr) DO UPDATE SET {updates}""")
 
 
+def refresh_stats() -> int:
+    """Rebuild only the statewide per-year tables (jobs Lambda: {"job": "refresh_stats"})."""
+    from .crash_stats import refresh
+    with connect(os.environ["DATABASE_URL_ADMIN"]) as conn, conn.cursor() as cur:
+        cur.execute((Path(__file__).parent / "crash_schema.sql").read_text())
+        refresh(cur)
+        conn.commit()
+    print("statewide stats refreshed (crash.year_stats, crash.year_collisions)", flush=True)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file", help="local path or s3://bucket/key")
     ap.add_argument("--srid", type=int, help="source CRS EPSG code (default: read from the file, else 4326)")
     ap.add_argument("--replace", action="store_true", help="empty crash.crashes before loading")
+    ap.add_argument("--no-stats", action="store_true", help="skip the statewide stats refresh (multi-part loads do it once at the end)")
     a = ap.parse_args(argv)
     if not exists(a.file):
         print(f"not found: {a.file}  (put files in ./data/import on the host; they appear as /import/...)")
@@ -202,6 +214,11 @@ def main(argv=None) -> int:
             n += len(batch)
         cur.execute("ANALYZE crash.crashes")
         conn.commit()
+        if not a.no_stats:
+            from .crash_stats import refresh
+            refresh(cur)
+            conn.commit()
+            print("statewide stats refreshed (crash.year_stats, crash.year_collisions)", flush=True)
         cur.execute("SELECT count(*), min(crash_year), max(crash_year), count(*) FILTER (WHERE node IS NOT NULL) "
                     "FROM crash.crashes")
         total, y0, y1, at_nodes = cur.fetchone()

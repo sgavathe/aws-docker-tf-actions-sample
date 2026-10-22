@@ -120,7 +120,7 @@ async def open_servers(stack: AsyncExitStack, token: str) -> dict[str, ClientSes
         else:
             client_kw = {"headers": {"Authorization": f"Bearer {token}"}}
         http = await stack.enter_async_context(
-            httpx2.AsyncClient(**client_kw, timeout=600 if name == "arcgis" else 120))   # Pro hot spot runs can take minutes
+            httpx2.AsyncClient(**client_kw, timeout=600 if name == "arcgis" else 310))   # geo-mcp Lambda limit is 300 s
         read, write = await stack.enter_async_context(streamable_http_client(url, http_client=http))
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()

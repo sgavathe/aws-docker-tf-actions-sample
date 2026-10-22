@@ -106,7 +106,7 @@ resource "aws_lambda_function" "mcp" {
   image_uri     = var.mcp_image
   architectures = ["x86_64"]
   memory_size   = 1024
-  timeout       = 120 # first query after an Aurora pause waits ~15 s; statewide grids take a few more
+  timeout       = 300 # Aurora resume (~15-30 s) + a county dashboard or network on a cold container
 
   vpc_config {
     subnet_ids         = aws_subnet.private[*].id
@@ -287,7 +287,7 @@ resource "aws_lambda_function" "chat" {
   image_uri     = var.chat_image
   architectures = ["x86_64"]
   memory_size   = 512
-  timeout       = 300 # a multi-step answer: several model calls + tool calls
+  timeout       = 600 # a multi-step answer: several model calls + tool calls (each tool up to 300 s)
 
   environment {
     variables = {
