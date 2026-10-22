@@ -25,6 +25,7 @@ flowchart LR
 | [docs/hosting.md](docs/hosting.md) | ECS vs serverless: both architectures, cost, wiring without a VPC, cold starts |
 | [SECURITY.md](SECURITY.md) | The six required PR checks, sensitive-content rules, OPA policies, accepted risks |
 | [serverless/README.md](serverless/README.md) | Deploying and switching between the two hosting modes |
+| [geo-mcp-aws/README.md](geo-mcp-aws/README.md) | Geo MCP analyst chat (Bedrock + MCP + Aurora PostGIS) at mcp.spatialenable.com: architecture, security, cost, deploy |
 | [pipeline/README.md](pipeline/README.md) | Building the infrastructure graph from OpenStreetMap |
 
 ## Repo layout
@@ -35,9 +36,10 @@ frontend/    React + Vite + ArcGIS Maps SDK: Grid Cascade and Harbor Watch views
 pipeline/    Python: OpenStreetMap extract -> infrastructure dependency graph (JSON)
 serverless/  Terraform + scripts: S3 + CloudFront + Lambda (live)
 infra/       Terraform: ECS Fargate + ALB in a VPC (parked)
+geo-mcp-aws/ Geo MCP analyst chat: Lambda + Bedrock + Cognito + Aurora Serverless v2 PostGIS (own state)
 policy/      OPA rules applied to Terraform plans, with unit tests
 scripts/security/    sensitive-content check run on every PR
-.github/workflows/   deploy-serverless.yml, deploy.yml (ECS), terraform-plan.yml, security.yml, ci-graph.yml
+.github/workflows/   deploy-serverless.yml, deploy.yml (ECS), deploy-geo-mcp.yml, terraform-plan.yml, security.yml, ci-graph.yml
 ```
 
 ## Run it locally (no AWS needed)

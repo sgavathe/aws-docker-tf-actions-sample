@@ -1,0 +1,4 @@
+{
+  "_readme": "Street name -> VDOT route label. The crash data has route numbers only, so add local names here (check the small white route-number signs or VDOT maps), then rebuild geo-mcp. Example: \"Some Road\": \"Rt 630\". Labels look like VA-156, US-460, I-95, Rt 630.",
+  "_example_entry_not_used": "Rt 999"
+}

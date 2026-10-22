@@ -1,0 +1,120 @@
+name: Deploy (geo MCP chat)
+
+# Routine code deploys for geo-mcp-aws/: test, build three Lambda images, push, point the
+# functions at them. Infrastructure changes are applied by an admin with
+# geo-mcp-aws/scripts/deploy.sh; this role cannot change infrastructure or IAM.
+#
+# Turn on after the first deploy: repo variable GEO_MCP_ENABLED = true, secret
+# AWS_GEO_MCP_ROLE_ARN, variable GEO_MCP_URL (both printed by deploy.sh).
+on:
+  push:
+    branches: [main]
+    paths: ["geo-mcp-aws/app/**", "geo-mcp-aws/lambda/**", ".github/workflows/deploy-geo-mcp.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["geo-mcp-aws/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-geo-mcp
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  PREFIX: geo-devops-demo-geomcp
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install --quiet \
+            -r geo-mcp-aws/app/mcp-server/requirements.txt -r geo-mcp-aws/app/mcp-server/requirements-aws.txt \
+            -r geo-mcp-aws/app/agent/requirements.txt -r geo-mcp-aws/app/agent/requirements-aws.txt \
+            pytest==8.4.2 "moto[s3,dynamodb,cognitoidp]==5.1.14" cryptography httpx
+      - name: MCP server tests (auth, SQL guard, S3 storage, Cognito, IAM DB auth)
+        working-directory: geo-mcp-aws/app/mcp-server
+        run: python -m pytest -q
+      - name: Agent + chat tests (Bedrock, SigV4, sessions, private maps)
+        working-directory: geo-mcp-aws/app/agent
+        run: python -m pytest -q tests
+      - name: Terraform format + validate
+        run: |
+          curl -sSfLO https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip
+          curl -sSfL https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_SHA256SUMS \
+            | grep linux_amd64.zip | sha256sum -c -
+          unzip -q terraform_1.9.0_linux_amd64.zip terraform && sudo mv terraform /usr/local/bin/
+          terraform -chdir=geo-mcp-aws/terraform fmt -check -recursive
+          terraform -chdir=geo-mcp-aws/terraform init -backend=false -input=false
+          terraform -chdir=geo-mcp-aws/terraform validate
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && vars.GEO_MCP_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC -> AWS role assumption, no stored keys
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GEO_MCP_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push images
+        run: |
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          REPO="$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$PREFIX"
+          geo-mcp-aws/scripts/build-images.sh "$REPO" > images.env
+          cat images.env
+
+      - name: Scan images (block on critical/high with a fix)
+        env:
+          # Same pin + checksum as kev-watch.yml (Trivy's release channel was compromised in March 2026)
+          TRIVY_VERSION: "0.74.0"
+          TRIVY_SHA256: "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+        run: |
+          curl -sSfL -o trivy.tgz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy && rm trivy.tgz
+          while IFS='=' read -r _ image; do
+            ./trivy image --quiet --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$image"
+          done < images.env
+
+      - name: Point the functions at the new images
+        run: |
+          . ./images.env
+          # function suffix -> image (the daily ingest runs the jobs image with another handler)
+          for pair in mcp:MCP chat:CHAT jobs:JOBS ingest:JOBS signup-hooks:JOBS; do
+            fn="$PREFIX-${pair%%:*}"; var="${pair##*:}_IMAGE"
+            aws lambda update-function-code --function-name "$fn" --image-uri "${!var}" > /dev/null
+            aws lambda wait function-updated --function-name "$fn"
+            echo "$fn -> ${!var##*:}"
+          done
+
+      - name: Map libraries
+        run: |
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          geo-mcp-aws/scripts/sync-vendor.sh "$PREFIX-data-$ACCOUNT"
+
+      - name: Smoke test
+        if: vars.GEO_MCP_URL != ''
+        run: curl -fsS --retry 10 --retry-delay 10 --retry-all-errors "${{ vars.GEO_MCP_URL }}/healthz"

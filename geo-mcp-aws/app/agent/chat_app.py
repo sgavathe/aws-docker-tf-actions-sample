@@ -1,0 +1,552 @@
+"""Browser chat for the geo MCP agent.
+
+    uvicorn chat_app:app --host 0.0.0.0 --port 8090
+
+- Sign-in posts username/password to Keycloak (password grant, demo only; production would
+  use authorization code + PKCE). Tokens stay on the server; the browser holds only an
+  opaque, HttpOnly, SameSite=Strict session cookie.
+- Every chat turn calls the MCP server with THAT user's access token, so the server's role
+  checks and audit log apply per person, exactly as with the CLI.
+- Turns stream back as NDJSON events (tool_call, tool_result, answer) so the page can show
+  progress while the local model works.
+
+AWS mode (set by the Terraform in geo-mcp-aws/):
+- AUTH_PROVIDER=cognito: sign-in with Cognito USER_PASSWORD_AUTH on a public app client (no secret).
+- SESSION_TABLE: sessions in DynamoDB (Lambda instances share nothing in memory). The table key is
+  a SHA-256 of the cookie, so reading the table never yields a usable cookie.
+- MAPS_BUCKET: generated maps and GeoJSON exports are served from a private S3 bucket by this app,
+  and only to signed-in users.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import secrets
+import time
+import zlib
+from pathlib import Path
+
+import httpx2
+import jwt
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+import sys
+import traceback
+
+from agent import agent_events, describe
+import quota as quota_mod
+
+AUTH_PROVIDER = os.environ.get("AUTH_PROVIDER", "keycloak")
+TOKEN_URL = os.environ.get("KEYCLOAK_TOKEN_URL", "")
+CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID") or os.environ.get("KEYCLOAK_CLIENT_ID", "geo-agent")
+SESSION_TABLE = os.environ.get("SESSION_TABLE", "")
+MAPS_BUCKET = os.environ.get("MAPS_BUCKET", "")
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false") == "true"
+ROLES = {"geo-reader", "geo-writer"}
+MAP_ORIGIN = os.environ.get("MAP_VIEWER_ORIGIN", "http://localhost:8088")
+COOKIE = "geo_session"
+SESSION_TTL = 8 * 3600
+MAX_HISTORY = 40
+STATIC = Path(__file__).parent / "static"
+
+
+
+# ---------------------------------------------------------------- sessions
+# session = {"tokens": {...}, "user": str, "roles": [...], "messages": [...], "seen": float}
+
+class MemorySessions:
+    def __init__(self):
+        self.d: dict[str, dict] = {}
+
+    def get(self, sid: str) -> dict | None:
+        return self.d.get(sid)
+
+    def put(self, sid: str, s: dict) -> None:
+        self.d[sid] = s
+
+    def delete(self, sid: str) -> None:
+        self.d.pop(sid, None)
+
+
+class DynamoSessions:
+    """One item per session: zlib-compressed JSON, expiring by TTL. Items are capped well below
+    DynamoDB's 400 KB limit by dropping the oldest conversation turns."""
+
+    LIMIT = 350_000
+
+    def __init__(self, table: str):
+        import boto3
+        self.t = boto3.resource("dynamodb").Table(table)
+
+    @staticmethod
+    def _key(sid: str) -> str:
+        return hashlib.sha256(sid.encode()).hexdigest()
+
+    def get(self, sid: str) -> dict | None:
+        item = self.t.get_item(Key={"sid": self._key(sid)}, ConsistentRead=True).get("Item")
+        if not item or item.get("expires", 0) < time.time():
+            return None
+        return json.loads(zlib.decompress(bytes(item["data"])))
+
+    def put(self, sid: str, s: dict) -> None:
+        while True:
+            blob = zlib.compress(json.dumps(s, default=str).encode(), 6)
+            if len(blob) < self.LIMIT or not s["messages"]:
+                break
+            del s["messages"][: max(2, len(s["messages"]) // 4)]
+        self.t.put_item(Item={"sid": self._key(sid), "data": blob, "expires": int(time.time()) + SESSION_TTL})
+
+    def delete(self, sid: str) -> None:
+        self.t.delete_item(Key={"sid": self._key(sid)})
+
+
+SESSIONS = DynamoSessions(SESSION_TABLE) if SESSION_TABLE else MemorySessions()
+QUOTA = quota_mod.Quota(quota_mod.DynamoQuota(SESSION_TABLE) if SESSION_TABLE else quota_mod.MemoryQuota())
+DEMO_GROUP = "geo-demo"   # guest accounts: tighter daily question limit
+
+app = FastAPI(title="Geo MCP chat", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/maps/"):
+        resp.headers["Content-Security-Policy"] = MAP_CSP   # generated MapLibre page, framed by the chat
+        resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    else:
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            f"connect-src 'self'; frame-src {MAP_ORIGIN or "'self'"}; frame-ancestors 'none'; base-uri 'none'; "
+            "form-action 'self'"
+        )
+    if COOKIE_SECURE:
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    # Map pages send only the site origin (no path) so tile servers can identify the app:
+    # OpenStreetMap's tile policy blocks requests that carry no Referer.
+    resp.headers["Referrer-Policy"] = ("strict-origin-when-cross-origin" if request.url.path.startswith("/maps/")
+                                       else "no-referrer")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+TILES = os.environ.get("MAP_TILE_ORIGIN", "")   # e.g. https://tile.openstreetmap.org when MAP_BASEMAP=osm
+MAP_CSP = (f"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+           f"img-src 'self' data: blob: {TILES}; worker-src blob:; child-src blob:; frame-src 'self'; "
+           f"connect-src 'self' {TILES}; frame-ancestors 'self'; base-uri 'none'")
+# frame-src 'self': a dashboard page frames its own map page (/maps/...); without it, frames fall back
+# to child-src (blob: only) and the browser refuses the same-origin map.
+
+
+class Login(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class Ask(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+def _claims(access_token: str) -> dict:
+    # Display only: the MCP server verifies the signature on every call.
+    return jwt.decode(access_token, options={"verify_signature": False})
+
+
+def _store(tokens: dict) -> dict:
+    tokens = dict(tokens)
+    tokens["expires_at"] = time.time() + int(tokens.get("expires_in", 300))
+    return tokens
+
+
+async def _token_request(data: dict) -> dict:
+    if AUTH_PROVIDER == "cognito":
+        return await asyncio.to_thread(_cognito, data)
+    async with httpx2.AsyncClient(timeout=15) as http:
+        r = await http.post(TOKEN_URL, data={"client_id": CLIENT_ID, **data})
+    if r.status_code != 200:
+        raise HTTPException(401, "Sign-in failed")
+    return r.json()
+
+
+_idp = None
+
+
+def _cognito(data: dict) -> dict:
+    """Same shape as an OAuth token response, from Cognito's InitiateAuth."""
+    global _idp
+    if _idp is None:
+        import boto3
+        _idp = boto3.client("cognito-idp")
+    if data["grant_type"] == "password":
+        flow, params = "USER_PASSWORD_AUTH", {"USERNAME": data["username"], "PASSWORD": data["password"]}
+    else:
+        flow, params = "REFRESH_TOKEN_AUTH", {"REFRESH_TOKEN": data["refresh_token"]}
+    try:
+        r = _idp.initiate_auth(ClientId=CLIENT_ID, AuthFlow=flow, AuthParameters=params)
+    except Exception as exc:
+        if type(exc).__name__ == "UserNotConfirmedException":
+            raise HTTPException(403, "Confirm your email first: enter the code we sent you")
+        raise HTTPException(401, "Sign-in failed")
+    res = r.get("AuthenticationResult")
+    if not res:   # e.g. NEW_PASSWORD_REQUIRED: set a permanent password with scripts/users.sh
+        raise HTTPException(401, "Sign-in failed: this account needs a password reset by an admin")
+    return {"access_token": res["AccessToken"], "expires_in": res.get("ExpiresIn", 3600),
+            "refresh_token": res.get("RefreshToken") or data.get("refresh_token", "")}
+
+
+def _user_roles(c: dict, fallback: str) -> tuple[str, list[str]]:
+    if AUTH_PROVIDER == "cognito":
+        return c.get("username", fallback), sorted(set(c.get("cognito:groups", [])) & ROLES)
+    return c.get("preferred_username", fallback), sorted(set(c.get("realm_access", {}).get("roles", [])) & ROLES)
+
+
+def _session(request: Request) -> tuple[str, dict]:
+    sid = request.cookies.get(COOKIE) or ""
+    s = SESSIONS.get(sid) if sid else None
+    if not s or time.time() - s["seen"] > SESSION_TTL:
+        if sid:
+            SESSIONS.delete(sid)
+        raise HTTPException(401, "Not signed in")
+    s["seen"] = time.time()
+    return sid, s
+
+
+async def _fresh_token(s: dict) -> str:
+    t = s["tokens"]
+    if time.time() < t["expires_at"] - 60:
+        return t["access_token"]
+    s["tokens"] = _store(await _token_request(
+        {"grant_type": "refresh_token", "refresh_token": t.get("refresh_token", "")}))
+    return s["tokens"]["access_token"]
+
+
+def _require_json(request: Request) -> None:
+    # Cross-site forms cannot send application/json without a CORS preflight, which this
+    # app never grants; together with SameSite=Strict this blocks CSRF.
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise HTTPException(415, "JSON required")
+
+
+@app.post("/api/login")
+async def login(body: Login, request: Request, response: Response):
+    _require_json(request)
+    tokens = _store(await _token_request(
+        {"grant_type": "password", "username": body.username, "password": body.password}))
+    claims = _claims(tokens["access_token"])
+    user, roles = _user_roles(claims, body.username)
+    if not roles:
+        raise HTTPException(403, "This account has no access yet. Ask the administrator.")
+    demo = DEMO_GROUP in (claims.get("cognito:groups") or claims.get("realm_access", {}).get("roles") or [])
+    sid = secrets.token_urlsafe(32)
+    SESSIONS.put(sid, {"tokens": tokens, "user": user, "roles": roles, "demo": demo, "messages": [],
+                       "seen": time.time()})
+    response.set_cookie(COOKIE, sid, httponly=True, samesite="strict", max_age=SESSION_TTL, secure=COOKIE_SECURE)
+    return {"user": user, "roles": roles, "map_origin": MAP_ORIGIN}
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    _, s = _session(request)
+    return {"user": s["user"], "roles": s["roles"], "map_origin": MAP_ORIGIN,
+            "quota": QUOTA.status(s["user"], s.get("demo", False))}
+
+
+@app.post("/api/logout")
+async def logout(request: Request, response: Response):
+    _require_json(request)
+    sid = request.cookies.get(COOKIE, "")
+    if sid:
+        SESSIONS.delete(sid)
+    response.delete_cookie(COOKIE)
+    return {"ok": True}
+
+
+@app.post("/api/reset")
+async def reset(request: Request):
+    _require_json(request)
+    sid, s = _session(request)
+    s["messages"] = []
+    SESSIONS.put(sid, s)
+    return {"ok": True}
+
+
+async def _with_pings(events, every: float = 15.0):
+    """Yield the agent's events, plus a ping when nothing happened for `every` seconds, so
+    CloudFront (60 s origin timeout) keeps the stream open while the model or database works."""
+    q: asyncio.Queue = asyncio.Queue()
+    done = object()
+
+    async def pump():
+        try:
+            async for ev in events:
+                await q.put(ev)
+        except Exception as exc:  # full traceback to the log; the user sees the error type only
+            traceback.print_exc(file=sys.stderr)
+            kind = describe(exc).split(":", 1)[0]
+            await q.put({"type": "error", "message": f"{kind}: the request failed (details in the chat function's log)"})
+        finally:
+            await q.put(done)
+
+    task = asyncio.create_task(pump())
+    try:
+        while True:
+            try:
+                ev = await asyncio.wait_for(q.get(), timeout=every)
+            except asyncio.TimeoutError:
+                yield {"type": "ping"}
+                continue
+            if ev is done:
+                return
+            yield ev
+    finally:
+        task.cancel()
+
+
+@app.post("/api/chat")
+async def ask(body: Ask, request: Request):
+    _require_json(request)
+    sid, s = _session(request)
+    reason = QUOTA.blocked(s["user"], s.get("demo", False))
+    if reason:   # over a daily limit: answer without calling the model
+        return StreamingResponse(iter([json.dumps({"type": "answer", "content": reason}) + "\n"]),
+                                 media_type="application/x-ndjson")
+    QUOTA.count_question(s["user"])
+    token = await _fresh_token(s)
+    s["messages"].append({"role": "user", "content": body.message})
+    SESSIONS.put(sid, s)
+
+    async def stream():
+        try:
+            async for ev in _with_pings(agent_events(token, s["messages"])):
+                if ev.get("type") == "usage":   # Bedrock tokens -> today's spend; not sent to the browser
+                    try:
+                        QUOTA.add_spend(quota_mod.model_cost(ev["input"], ev["output"]))
+                        _spend_alerts()
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
+                    continue
+                yield json.dumps(ev, default=str) + "\n"
+        finally:
+            # Keep the conversation bounded; tool outputs are the bulk of it.
+            del s["messages"][:-MAX_HISTORY]
+            SESSIONS.put(sid, s)
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# ---------------------------------------------------------------- open sign-up (AWS)
+# Email + password; Cognito emails a 6-digit code. Confirmation runs the pool's PostConfirmation
+# trigger, which puts the account in the demo groups and notifies the owner. Responses don't
+# reveal whether an email is already registered.
+
+SIGNUP_ENABLED = os.environ.get("SIGNUP_ENABLED", "") == "true" and AUTH_PROVIDER == "cognito"
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+ALERT_TOPIC_ARN = os.environ.get("ALERT_TOPIC_ARN", "")
+_sns = None
+
+
+class SignUp(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+    password: str = Field(min_length=14, max_length=200)
+
+
+class Confirm(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+    code: str = Field(min_length=6, max_length=8, pattern=r"^\d+$")
+
+
+class Resend(BaseModel):
+    email: str = Field(min_length=6, max_length=254)
+
+
+def _signup_email(raw: str) -> str:
+    if not SIGNUP_ENABLED:
+        raise HTTPException(404)
+    email = raw.strip().lower()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "Enter a valid email address")
+    return email
+
+
+def _idp_client():
+    global _idp
+    if _idp is None:
+        import boto3
+        _idp = boto3.client("cognito-idp")
+    return _idp
+
+
+@app.get("/api/signup-enabled")
+async def signup_enabled():
+    return {"enabled": SIGNUP_ENABLED}
+
+
+@app.post("/api/signup")
+async def signup(body: SignUp, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().sign_up, ClientId=CLIENT_ID, Username=email, Password=body.password,
+                                UserAttributes=[{"Name": "email", "Value": email}])
+    except Exception as exc:
+        kind = type(exc).__name__
+        if kind == "InvalidPasswordException":
+            raise HTTPException(400, "Password needs 14+ characters with upper and lower case, a number and a symbol")
+        if kind not in ("UsernameExistsException",):   # existing email: same answer as a new one
+            traceback.print_exc(file=sys.stderr)
+            raise HTTPException(429 if kind in ("TooManyRequestsException", "LimitExceededException") else 400,
+                                "Sign-up is busy; try again in a few minutes")
+    return {"ok": True, "next": "confirm"}
+
+
+@app.post("/api/confirm")
+async def confirm(body: Confirm, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().confirm_sign_up, ClientId=CLIENT_ID, Username=email,
+                                ConfirmationCode=body.code)
+    except Exception as exc:
+        if type(exc).__name__ == "NotAuthorizedException":   # already confirmed
+            return {"ok": True}
+        raise HTTPException(400, "That code is wrong or expired. Request a new one.")
+    return {"ok": True}
+
+
+@app.post("/api/resend")
+async def resend(body: Resend, request: Request):
+    _require_json(request)
+    email = _signup_email(body.email)
+    try:
+        await asyncio.to_thread(_idp_client().resend_confirmation_code, ClientId=CLIENT_ID, Username=email)
+    except Exception:
+        pass   # same answer whether or not the email exists
+    return {"ok": True}
+
+
+def _notify(subject: str, message: str) -> None:
+    global _sns
+    if not ALERT_TOPIC_ARN:
+        return
+    try:
+        if _sns is None:
+            import boto3
+            _sns = boto3.client("sns")
+        _sns.publish(TopicArn=ALERT_TOPIC_ARN, Subject=subject[:100], Message=message)
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+
+def _spend_alerts() -> None:
+    """Email the owner once per day when today's spend passes 80% and 100% of the cap."""
+    cap = quota_mod.DAILY_BUDGET_USD
+    if not cap:
+        return
+    spent = QUOTA.spent()
+    for pct in (80, 100):
+        if spent >= cap * pct / 100 and QUOTA.once(f"alert-{pct}"):
+            _notify(f"Geo demo: {pct}% of today's budget used",
+                    f"Estimated model + search spend today: ${spent:.3f} of ${cap:.2f} ({pct}% threshold).\n"
+                    + ("New questions are now refused until midnight UTC (8 pm Eastern), except exempt users."
+                       if pct >= 100 else "Questions continue until the cap is reached."))
+
+
+# ---------------------------------------------------------------- address search (AWS)
+# The map pages' search box posts here; the geocoder is called server-side with the function's IAM
+# role (Amazon Location Service), so the browser needs no key and no extra origin in the CSP.
+
+GEOCODE_PROVIDER = os.environ.get("GEOCODE_PROVIDER", "")
+_places = None
+
+
+class Geo(BaseModel):
+    q: str = Field(min_length=2, max_length=200)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+
+
+def _place_rows(items: list[dict]) -> list[dict]:
+    out = []
+    for i in items or []:
+        pos = i.get("Position") or []
+        if len(pos) == 2:
+            out.append({"label": (i.get("Address") or {}).get("Label") or i.get("Title") or "",
+                        "lon": float(pos[0]), "lat": float(pos[1])})
+    return out
+
+
+@app.post("/api/geocode")
+async def geocode(body: Geo, request: Request):
+    _require_json(request)
+    _, s = _session(request)
+    if GEOCODE_PROVIDER != "amazon-location":
+        raise HTTPException(404)
+    if QUOTA.search_blocked(s["user"]):
+        raise HTTPException(429, "Daily demo budget reached")
+    QUOTA.add_spend(quota_mod.GEOCODE_PRICE)
+    global _places
+    if _places is None:
+        import boto3
+        _places = boto3.client("geo-places")
+    bias = [body.lon, body.lat] if body.lon is not None and body.lat is not None else [-77.43, 37.54]
+    try:
+        r = await asyncio.to_thread(_places.geocode, QueryText=body.q, MaxResults=5, BiasPosition=bias,
+                                    Filter={"IncludeCountries": ["USA"]})
+        rows = _place_rows(r.get("ResultItems"))
+        if not rows:   # landmarks and business names: free-text search near the map
+            r = await asyncio.to_thread(_places.search_text, QueryText=body.q, MaxResults=5, BiasPosition=bias)
+            rows = _place_rows(r.get("ResultItems"))
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        raise HTTPException(502, "Address search is unavailable")
+    return {"results": rows}
+
+
+# ---------------------------------------------------------------- maps and exports (AWS)
+# Locally the map-viewer nginx serves these. In AWS they live in a private bucket and are served
+# here, so only signed-in users can open a map or download an export.
+
+MAP_FILE = re.compile(r"^(?:[A-Za-z0-9][\w.\-]{0,120}\.html|exports/[A-Za-z0-9][\w.\-]{0,120}\.geojson)$")
+_s3 = None
+
+
+@app.get("/maps/{path:path}")
+async def map_file(path: str, request: Request):
+    if not MAPS_BUCKET:
+        raise HTTPException(404)
+    _session(request)
+    if not MAP_FILE.match(path):
+        raise HTTPException(404)
+    global _s3
+    if _s3 is None:
+        import boto3
+        _s3 = boto3.client("s3")
+    try:
+        obj = await asyncio.to_thread(_s3.get_object, Bucket=MAPS_BUCKET, Key=f"maps/{path}")
+    except Exception:
+        raise HTTPException(404)
+    body = await asyncio.to_thread(obj["Body"].read)
+    if path.endswith(".html"):
+        return Response(body, media_type="text/html; charset=utf-8")
+    return Response(body, media_type="application/geo+json",
+                    headers={"Content-Disposition": f'attachment; filename="{path.rsplit("/", 1)[-1]}"'})
+
+
+@app.get("/healthz")
+async def healthz():
+    return JSONResponse({"ok": True})
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/")
+async def index():
+    return FileResponse(STATIC / "index.html")

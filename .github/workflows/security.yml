@@ -5,7 +5,7 @@ name: Security
 #   secrets    gitleaks over the full git history: API keys, tokens, private keys, passwords
 #   sensitive  handling markings (PCII, CUI, FOUO, TLP:AMBER/RED, LES, SSI), key/state/env files,
 #              office/PDF docs and archives, real infrastructure graphs, files over 5 MB
-#   iac        Checkov static scan of infra/ and serverless/terraform/ (accepted risks: .checkov.yaml)
+#   iac        Checkov static scan of infra/, serverless/terraform/ and geo-mcp-aws/terraform/ (accepted risks: .checkov.yaml)
 #   policy     unit tests for the OPA rules that terraform-plan.yml applies to the ECS plan
 
 on:
@@ -55,7 +55,7 @@ jobs:
       - name: Checkov
         run: |
           pip install --quiet checkov==3.3.26
-          checkov --config-file .checkov.yaml -d infra -d serverless/terraform \
+          checkov --config-file .checkov.yaml -d infra -d serverless/terraform -d geo-mcp-aws/terraform \
             -o cli -o sarif --output-file-path console,checkov.sarif
       - name: Upload findings to the Security tab
         if: always() && hashFiles('checkov.sarif') != ''

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geo Analyst Assistant</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>Geo Analyst Assistant</h1>
+      <p class="sub">Critical infrastructure cascade analysis · synthetic demo data</p>
+    </div>
+  </div>
+  <div class="who" id="who" hidden>
+    <span class="badge" id="enclave">AWS</span>
+    <span id="user"></span>
+    <span id="roles"></span>
+    <button class="ghost" id="newchat" type="button">New chat</button>
+    <button class="ghost" id="signout" type="button">Sign out</button>
+  </div>
+</header>
+
+<main class="layout" id="app" hidden>
+  <section class="chat" aria-label="Conversation">
+    <div class="log" id="log" aria-live="polite">
+      <div class="empty" id="empty">
+        <h2>Ask about crashes, roads and infrastructure</h2>
+        <p>Answers come only from the project database, through tools that check your role and log every call.</p>
+        <p class="exhint">Try one: click to put it in the box, change the county or year if you like, then Ask.</p>
+        <div id="examples" class="examples"></div>
+      </div>
+    </div>
+    <form class="composer" id="composer">
+      <label for="q" class="sr">Your question</label>
+      <textarea id="q" rows="2" placeholder="Ask a question, e.g. what if WTR-06 fails?" required maxlength="4000"></textarea>
+      <div class="sendcol">
+        <button type="submit" id="send">Ask</button>
+        <button type="button" id="exbtn" class="exbtn" aria-expanded="false" aria-controls="expop">Examples</button>
+      </div>
+      <div id="expop" class="expop" role="dialog" aria-label="Example questions" hidden></div>
+    </form>
+  </section>
+
+  <section class="panel" aria-label="Results">
+    <nav class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="map" type="button">Map</button>
+      <button role="tab" aria-selected="false" data-tab="data" type="button">Data</button>
+      <button role="tab" aria-selected="false" data-tab="trace" type="button">Trace <span class="count" id="tracecount">0</span></button>
+    </nav>
+    <div class="tabpane" data-pane="map">
+      <div class="placeholder" id="mapempty">Maps you ask for appear here.</div>
+      <iframe id="map" title="Result map" hidden></iframe>
+      <div class="maplinks">
+        <a id="propng" target="_blank" rel="noopener" hidden>ArcGIS Pro layout</a>
+        <a id="propdf" target="_blank" rel="noopener" hidden>PDF</a>
+        <a id="mapopen" target="_blank" rel="noopener" hidden>Open in new tab</a>
+      </div>
+    </div>
+    <div class="tabpane" data-pane="data" hidden>
+      <div class="placeholder" id="dataempty">Tables from tool results appear here.</div>
+      <div id="data"></div>
+    </div>
+    <div class="tabpane" data-pane="trace" hidden>
+      <div class="placeholder" id="traceempty">Each tool the model calls is listed here, with its inputs and outcome.</div>
+      <ol id="trace" class="trace"></ol>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="login" role="dialog" aria-modal="true" aria-labelledby="logintitle">
+  <form class="card" id="loginform">
+    <span class="mark big" aria-hidden="true"></span>
+    <h2 id="logintitle">Sign in</h2>
+    <p class="muted">Sign in to ask about crashes, roads and infrastructure. Your account's role decides which tools the assistant may use for you.</p>
+    <label>Username or email <input id="username" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" id="loginerror" role="alert"></p>
+    <p class="ok" id="loginok" role="status"></p>
+    <button type="submit">Sign in</button>
+    <p class="hint" id="signuplink" hidden>No account? <button type="button" class="linkbtn" id="showsignup">Create one</button></p>
+  </form>
+  <form class="card" id="signupform" hidden>
+    <span class="mark big" aria-hidden="true"></span>
+    <h2>Create a demo account</h2>
+    <p class="muted">Free demo access: maps, dashboards and analysis, with a daily question limit. We'll email you a code to confirm your address.</p>
+    <label>Email <input id="su_email" type="email" autocomplete="email" required maxlength="254"></label>
+    <label>Password <input id="su_password" type="password" autocomplete="new-password" required minlength="14" maxlength="200"></label>
+    <label>Password again <input id="su_password2" type="password" autocomplete="new-password" required minlength="14" maxlength="200"></label>
+    <p class="hint">14+ characters with upper and lower case, a number and a symbol.</p>
+    <p class="error" id="signuperror" role="alert"></p>
+    <button type="submit">Create account</button>
+    <p class="hint">Have an account? <button type="button" class="linkbtn" data-show="loginform">Sign in</button></p>
+  </form>
+  <form class="card" id="confirmform" hidden>
+    <span class="mark big" aria-hidden="true"></span>
+    <h2>Check your email</h2>
+    <p class="muted">We sent a 6-digit code to <b id="cf_email"></b>. It can take a minute; check spam too.</p>
+    <label>Code <input id="cf_code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9]{6,8}" maxlength="8"></label>
+    <p class="error" id="confirmerror" role="alert"></p>
+    <p class="ok" id="confirmok" role="status"></p>
+    <button type="submit">Confirm</button>
+    <p class="hint"><button type="button" class="linkbtn" id="resend">Send a new code</button> ·
+      <button type="button" class="linkbtn" data-show="loginform">Back to sign in</button></p>
+  </form>
+</div>
+</body>
+</html>
