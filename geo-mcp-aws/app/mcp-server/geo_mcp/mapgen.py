@@ -213,9 +213,78 @@ document.getElementById('basenote').textContent = note;
 const map = new maplibregl.Map({{
   container: 'map',
   style: style,
-  center: [-77.45, 37.55], zoom: 10
+  center: [-77.45, 37.55], zoom: 10,
+  preserveDrawingBuffer: true   // lets the PNG export / dashboard print read the rendered map
 }});
 map.addControl(new maplibregl.NavigationControl());
+// ---- PNG export: the map as rendered plus title, legend and attribution drawn onto the image ----
+const PAGE_TITLE = document.title;
+function legendRows() {{
+  return DATA.layers.map((l) => ({{
+    name: l.name, color: l.color || '#888', line: !!l.lines,
+    ramp: l.kind === 'heatmap' ? ['#fde68a', '#f97316', '#b91c1c'] : (l.ramp ? l.ramp.map((r) => r[1]) : null),
+    count: l.legend_note ? null : (l.geojson.features || []).length,
+  }}));
+}}
+function mapSnapshot() {{
+  const src = map.getCanvas();
+  const out = document.createElement('canvas');
+  out.width = src.width; out.height = src.height;
+  const g = out.getContext('2d');
+  const k = src.width / src.clientWidth;          // device pixel ratio of the map canvas
+  g.fillStyle = '#eef1f4'; g.fillRect(0, 0, out.width, out.height);
+  g.drawImage(src, 0, 0);
+  const rows = legendRows();
+  const sub = (document.querySelector('#pbody .note') || {{}}).textContent || '';
+  g.font = `${{600 * 1}} ${{15 * k}}px system-ui, sans-serif`;
+  let w = g.measureText(PAGE_TITLE).width;
+  g.font = `${{12 * k}}px system-ui, sans-serif`;
+  rows.forEach((r) => {{ w = Math.max(w, g.measureText(r.name + (r.count != null ? ` (${{r.count}})` : '')).width + 26 * k); }});
+  if (sub) w = Math.max(w, Math.min(g.measureText(sub).width, 420 * k));
+  const pad = 12 * k, lh = 19 * k, bw = w + 2 * pad, bh = pad * 2 + 22 * k + (sub ? lh : 0) + rows.length * lh;
+  g.fillStyle = 'rgba(255,255,255,0.93)'; g.strokeStyle = 'rgba(0,0,0,0.15)'; g.lineWidth = k;
+  g.fillRect(10 * k, 10 * k, bw, bh); g.strokeRect(10 * k, 10 * k, bw, bh);
+  let y = 10 * k + pad + 15 * k;
+  g.fillStyle = '#111827'; g.font = `600 ${{15 * k}}px system-ui, sans-serif`; g.fillText(PAGE_TITLE, 10 * k + pad, y);
+  g.font = `${{12 * k}}px system-ui, sans-serif`;
+  if (sub) {{ y += lh; g.fillStyle = '#4b5563'; g.fillText(sub.slice(0, 90), 10 * k + pad, y); }}
+  rows.forEach((r) => {{
+    y += lh; const x = 10 * k + pad;
+    if (r.ramp) {{
+      const gr = g.createLinearGradient(x, 0, x + 18 * k, 0);
+      r.ramp.forEach((c, i) => gr.addColorStop(i / Math.max(1, r.ramp.length - 1), c));
+      g.fillStyle = gr; g.fillRect(x, y - 9 * k, 18 * k, 8 * k);
+    }} else if (r.line) {{ g.fillStyle = r.color; g.fillRect(x, y - 6 * k, 18 * k, 3 * k); }}
+    else {{ g.fillStyle = r.color; g.beginPath(); g.arc(x + 6 * k, y - 4 * k, 5 * k, 0, 2 * Math.PI); g.fill(); }}
+    g.fillStyle = '#111827'; g.fillText(r.name + (r.count != null ? ` (${{r.count}})` : ''), x + 24 * k, y);
+  }});
+  const credit = '© OpenStreetMap contributors · ' + new Date().toISOString().slice(0, 10);
+  g.font = `${{11 * k}}px system-ui, sans-serif`;
+  const cw = g.measureText(credit).width + 12 * k;
+  g.fillStyle = 'rgba(255,255,255,0.85)'; g.fillRect(out.width - cw, out.height - 20 * k, cw, 20 * k);
+  g.fillStyle = '#374151'; g.fillText(credit, out.width - cw + 6 * k, out.height - 6 * k);
+  return out.toDataURL('image/png');
+}}
+window.mapSnapshot = mapSnapshot;   // used by dashboards (same origin) to print the map
+function downloadPng() {{
+  const a = document.createElement('a');
+  a.href = mapSnapshot();
+  a.download = (PAGE_TITLE.replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'map') + '.png';
+  document.body.append(a); a.click(); a.remove();
+}}
+class PngControl {{
+  onAdd() {{
+    const box = document.createElement('div');
+    box.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+    const b = document.createElement('button');
+    b.type = 'button'; b.title = 'Download this view as PNG'; b.setAttribute('aria-label', 'Download PNG');
+    b.textContent = '⤓'; b.style.fontSize = '16px';
+    b.addEventListener('click', downloadPng);
+    box.append(b); return box;
+  }}
+  onRemove() {{}}
+}}
+map.addControl(new PngControl(), 'top-right');
 if (DATA.geocode) addressSearch(map);
 // Zoom links (dashboard lists): #zoom=lon,lat[,zoom]&label=text. Validated numbers only; the label
 // is shown as text, never HTML.

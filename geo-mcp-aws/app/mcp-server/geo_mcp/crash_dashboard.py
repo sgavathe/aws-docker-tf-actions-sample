@@ -138,13 +138,29 @@ def render_dashboard(d: dict) -> str:
  .muted{{color:var(--muted)}} svg{{width:100%;height:auto}} .lbl,.val,.tick{{font-size:11px;fill:#374151}}
  .tick{{text-anchor:middle}} .note{{color:var(--muted);font-size:12px;margin-top:6px}}
  @media (max-width:900px){{.tiles{{grid-template-columns:repeat(2,1fr)}}.main,.grid3,.grid2{{grid-template-columns:1fr}}}}
+ header{{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}}
+ .toolbar{{display:flex;gap:8px}} .toolbar button{{font:600 13px system-ui,sans-serif;padding:7px 12px;border-radius:8px;cursor:pointer;
+   border:1px solid #c8d6e8;background:#fff;color:#1f4f86}} .toolbar button:hover{{background:#e4edf7}}
+ .print-map{{display:none;width:100%;border-radius:8px}}
+ @page{{size:letter landscape;margin:9mm}}
+ @media print{{
+   *{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+   body{{background:#fff;font-size:11px}} header{{padding:0 0 6px}} h1{{font-size:18px}}
+   .toolbar,.screen-only{{display:none!important}} iframe{{display:none!important}} .print-map{{display:block}}
+   .tiles,.main,.grid3,.grid2{{padding:4px 0}} .card{{break-inside:avoid;page-break-inside:avoid}}
+   .main{{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}} .grid3{{grid-template-columns:repeat(3,minmax(0,1fr))}}
+   .grid2{{grid-template-columns:repeat(2,minmax(0,1fr))}} .tiles{{grid-template-columns:repeat(5,1fr)}}
+   li b a{{border:0;color:inherit}} li b a::after{{content:""}}
+ }}
 </style></head><body>
-<header><h1>{E(d["title"])}</h1><div class="scope">{E(d["scope"])}</div></header>
+<header><div><h1>{E(d["title"])}</h1><div class="scope">{E(d["scope"])}</div></div>
+ <div class="toolbar"><button type="button" id="dlpng">Download map (PNG)</button>
+ <button type="button" id="printpdf">Print / Save as PDF</button></div></header>
 <section class="tiles">{"".join(f'<div class="tile"><b>{E(v)}</b><span>{E(t)}</span></div>' for t, v in tiles)}</section>
 <section class="main">
- <div class="card"><h2>Crashes and road network</h2><iframe name="dashmap" src="{E(d["map_file"])}" title="Crash map"></iframe>
+ <div class="card"><h2>Crashes and road network</h2><iframe name="dashmap" src="{E(d["map_file"])}" title="Crash map"></iframe><img class="print-map" alt="Crash map">
   <div class="note">Points by severity; lines are road links between crash-coded intersections, thicker and redder where
-  more shortest trips pass (schematic straight lines). Use the search box to find an address.</div></div>
+  more shortest trips pass (schematic straight lines).<span class="screen-only"> Use the search box to find an address.</span></div></div>
  <div>
   <div class="card"><h2>Accident hot spots (intersections) <span class="muted" style="font-weight:400">· click to zoom</span></h2><ul>{hot}</ul></div>
   <div class="card" style="margin-top:12px"><h2>Critical and dangerous intersections <span class="muted" style="font-weight:400">· click to zoom</span></h2><ul>{crit}</ul>
@@ -166,4 +182,21 @@ def render_dashboard(d: dict) -> str:
   <div class="note">Screening suggestions from crash shares, not an engineering study.</div></div>
 </section>
 <div class="note" style="padding:0 20px 20px">{E(d["source"])}</div>
+<script>
+// Print and PNG: ask the framed map (same origin) for a snapshot with its legend. Static code only;
+// nothing from the data is inserted here.
+(() => {{
+  const frame = document.querySelector('iframe[name="dashmap"]'), img = document.querySelector('.print-map');
+  const snap = () => {{ try {{ return frame.contentWindow.mapSnapshot(); }} catch (e) {{ return null; }} }};
+  const fill = () => {{ const u = snap(); if (u) img.src = u; return u; }};
+  window.addEventListener('beforeprint', fill);
+  document.getElementById('printpdf').addEventListener('click', () => {{ fill(); setTimeout(() => window.print(), 150); }});
+  document.getElementById('dlpng').addEventListener('click', () => {{
+    const u = snap(); if (!u) return;
+    const a = document.createElement('a'); a.href = u;
+    a.download = (document.title.replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'dashboard') + '-map.png';
+    document.body.append(a); a.click(); a.remove();
+  }});
+}})();
+</script>
 </body></html>"""

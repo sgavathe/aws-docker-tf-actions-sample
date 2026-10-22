@@ -73,7 +73,7 @@ def test_dashboard_escapes_everything():
         "collisions": [{"label": "1. " + evil, "n": 2, "share": .2, "state_share": .1}],
         "by_hour": [1] * 24, "by_dow": [1] * 7, "patterns": [evil],
         "recommendations": [{"title": evil, "measures": evil, "why": evil}], "source": evil})
-    assert "<script>" not in page and 'onload="alert' not in page
+    assert "<script>alert(1)" not in page and 'onload="alert' not in page   # payload escaped; the page's own script is static
     assert page.count("&lt;script&gt;") >= 8
 
 
