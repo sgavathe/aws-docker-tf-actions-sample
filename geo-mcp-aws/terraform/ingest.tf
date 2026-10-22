@@ -18,8 +18,9 @@ variable "crash_sync_schedule" {
 }
 
 variable "crash_sync_enabled" {
-  type    = bool
-  default = true
+  description = "Run the daily VDOT sync. Off by default: the loaded data stays in the database; turn on (or invoke the ingest Lambda by hand) to refresh"
+  type        = bool
+  default     = false
 }
 
 resource "aws_cloudwatch_log_group" "ingest" {
