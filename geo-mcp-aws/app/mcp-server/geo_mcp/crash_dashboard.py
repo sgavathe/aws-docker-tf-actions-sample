@@ -146,7 +146,11 @@ def render_dashboard(d: dict) -> str:
  @media print{{
    *{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
    body{{background:#fff;font-size:11px}} header{{padding:0 0 6px}} h1{{font-size:18px}}
-   .toolbar,.screen-only{{display:none!important}} iframe{{display:none!important}} .print-map{{display:block}}
+   .toolbar,.screen-only{{display:none!important}} iframe{{display:none!important}}
+   /* The snapshot keeps the on-screen map's shape; a narrow chat pane gives a tall image that pushed the
+      whole map row to page 2. Cap its height so title, tiles, map and lists share page 1. */
+   .print-map{{display:block;width:auto;max-width:100%;max-height:118mm;margin:0 auto}}
+   .tile{{padding:6px 10px}} .tile b{{font-size:18px}} li{{padding:3px 0}}
    .tiles,.main,.grid3,.grid2{{padding:4px 0}} .card{{break-inside:avoid;page-break-inside:avoid}}
    .main{{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}} .grid3{{grid-template-columns:repeat(3,minmax(0,1fr))}}
    .grid2{{grid-template-columns:repeat(2,minmax(0,1fr))}} .tiles{{grid-template-columns:repeat(5,1fr)}}
