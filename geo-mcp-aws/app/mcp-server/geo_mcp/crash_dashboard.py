@@ -19,7 +19,7 @@ DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 RULES = [
     ("angle", "Angle crashes at intersections",
      "Roundabouts; dedicated left-turn lanes; backplates with retroreflective borders on signals"),
-    ("rear end", "Rear-end crashes",
+    ("rear_end", "Rear-end crashes",
      "Yellow change interval and signal timing review; corridor access management"),
     ("pedestrian", "Pedestrian crashes",
      "Crosswalk visibility enhancements; pedestrian refuge islands; RRFB or pedestrian hybrid beacons; leading pedestrian intervals"),
@@ -194,7 +194,7 @@ def render_dashboard(d: dict) -> str:
   document.getElementById('dlpng').addEventListener('click', () => {{
     const u = snap(); if (!u) return;
     const a = document.createElement('a'); a.href = u;
-    a.download = (document.title.replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'dashboard') + '-map.png';
+    a.download = (document.title.replace(/[^\\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'dashboard') + '-map.png';
     document.body.append(a); a.click(); a.remove();
   }});
 }})();

@@ -269,7 +269,7 @@ window.mapSnapshot = mapSnapshot;   // used by dashboards (same origin) to print
 function downloadPng() {{
   const a = document.createElement('a');
   a.href = mapSnapshot();
-  a.download = (PAGE_TITLE.replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'map') + '.png';
+  a.download = (PAGE_TITLE.replace(/[^\\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'map') + '.png';
   document.body.append(a); a.click(); a.remove();
 }}
 class PngControl {{

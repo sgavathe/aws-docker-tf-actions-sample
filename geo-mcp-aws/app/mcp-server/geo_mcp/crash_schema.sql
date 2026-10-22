@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS crashes_geom_idx ON crash.crashes USING gist (geom);
 CREATE INDEX IF NOT EXISTS crashes_node_idx ON crash.crashes (node);
 CREATE INDEX IF NOT EXISTS crashes_year_idx ON crash.crashes (crash_year);
 CREATE INDEX IF NOT EXISTS crashes_route_idx ON crash.crashes (route_label);
+CREATE INDEX IF NOT EXISTS crashes_juris_idx ON crash.crashes (juris, crash_year);   -- county/city filters
 
 GRANT USAGE ON SCHEMA crash TO mcp_reader, mcp_writer;
 GRANT SELECT ON ALL TABLES IN SCHEMA crash TO mcp_reader, mcp_writer;

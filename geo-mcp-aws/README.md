@@ -146,6 +146,9 @@ Prerequisites: terraform ≥ 1.5, Docker with buildx, Node 20+, Python 3 with bo
    ```
    The REST API returns coded values (county `74`); the sync decodes them to the same labels as
    VDOT's file downloads (`074. Prince George County`) and keeps severity as K/A/B/C/O.
+   Each load also rebuilds small per-year statewide tables (`crash.year_stats`, `crash.year_collisions`)
+   that dashboards compare against, so a dashboard never scans all 1.16M rows. To rebuild them alone:
+   `aws lambda invoke --function-name geo-devops-demo-geomcp-jobs --cli-binary-format raw-in-base64-out --payload '{"job":"refresh_stats"}' /dev/stdout`
    The synced layer includes street names (`ROUTE_OR_STREET_NM`), so `find_intersection` accepts
    "Middle Road" and "Prince George Drive" as well as route numbers. Records VDOT deletes upstream
    are not deleted here (upsert only).
