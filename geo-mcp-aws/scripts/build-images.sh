@@ -8,6 +8,11 @@ REGISTRY="${REPO%%/*}"
 TAG="$(git -C "$HERE" rev-parse --short=8 HEAD 2>/dev/null || echo local)-$(date -u +%Y%m%d%H%M%S)"
 
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >&2
+# Sign in to ECR Public too: anonymous pulls of public.ecr.aws base images (the Lambda Web Adapter)
+# share a data quota across CI runners and fail with 429 "Data limit exceeded". Best effort.
+aws ecr-public get-login-password --region us-east-1 2>/dev/null \
+  | docker login --username AWS --password-stdin public.ecr.aws >&2 \
+  || echo "    (ECR Public sign-in unavailable; pulling public images anonymously)" >&2
 
 build() {  # kind dockerfile context
   local image="$REPO:$1-$TAG"

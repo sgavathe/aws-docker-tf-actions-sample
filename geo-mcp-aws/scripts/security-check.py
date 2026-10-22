@@ -116,7 +116,7 @@ def check_lambda(lam):
                 report(lvl, "lambda", f"{name}: function URL auth {u['AuthType']}")
             env = (f.get("Environment") or {}).get("Variables", {})
             risky = [k for k in env if any(w in k.upper() for w in ("SECRET", "PASSWORD", "TOKEN", "PRIVATE_KEY", "API_KEY"))
-                     and not k.upper().endswith(("_ARN", "_URL", "_TABLE"))]
+                     and not k.upper().endswith(("_ARN", "_URL", "_TABLE", "_ISSUER", "_PROVIDER"))]
             if risky:
                 report("WARN", "lambda", f"{name}: env vars that look like secrets: {', '.join(risky)}")
             pol = safe(lam.get_policy, FunctionName=name)
