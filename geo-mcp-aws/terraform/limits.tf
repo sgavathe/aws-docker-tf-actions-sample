@@ -4,7 +4,7 @@
 #      token counts, and per-user question limits (tighter for the geo-demo group). Over a
 #      limit, the chat answers with a short message and never calls the model.
 #   2. Monthly backstop (AWS Budgets action): when the account's actual monthly cost passes
-#      hard_stop_usd, Budgets attaches a deny policy to the chat role, so Bedrock and address
+#      hard_stop_usd (Bedrock + Location only), Budgets attaches a deny policy to the chat role, so Bedrock and address
 #      search stop until you detach it. Budget data lags by hours; the daily cap is the
 #      fast control, this catches anything else.
 
@@ -45,9 +45,15 @@ variable "bedrock_price_out_per_mtok" {
 }
 
 variable "hard_stop_usd" {
-  description = "Monthly account cost at which Budgets cuts off the chat's model access (needs budget_email)"
+  description = "Monthly model + address-search cost (var.hard_stop_services only) at which Budgets cuts off the chat's model access (needs budget_email). Above 31 x daily_budget_usd so it only fires if the daily cap fails."
   type        = number
-  default     = 20
+  default     = 40
+}
+
+variable "hard_stop_services" {
+  description = "Cost Explorer service names the hard stop counts. Check yours: aws ce get-dimension-values --dimension SERVICE --time-period Start=YYYY-MM-01,End=YYYY-MM-DD"
+  type        = list(string)
+  default     = ["Amazon Bedrock", "Amazon Location Service"]
 }
 
 resource "aws_cognito_user_group" "demo" {
@@ -79,6 +85,13 @@ resource "aws_budgets_budget" "hard_stop" {
   limit_amount = tostring(var.hard_stop_usd)
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
+
+  # Only the services the chat pays for. Without this filter the whole account's bill (database,
+  # other projects) counted, so the stop could fire with almost no model use.
+  cost_filter {
+    name   = "Service"
+    values = var.hard_stop_services
+  }
 }
 
 resource "aws_iam_role" "budget_action" {

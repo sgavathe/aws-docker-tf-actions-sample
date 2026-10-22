@@ -8,6 +8,7 @@ from __future__ import annotations
 import difflib
 import json
 import math
+from datetime import date
 import re
 import os
 import time
@@ -887,6 +888,54 @@ def register(mcp, srv) -> None:
         _state_cache[key] = (time.time(), (fac, coll))
         return fac, coll
 
+    def year_by_year(where: str, p: dict, kp: dict, top: list[dict]) -> dict:
+        """Per-year totals for the area, per-year counts for the top hot spots, and the top 3
+        intersections each year. A latest year that isn't over yet is flagged and compared on the
+        same calendar period (Jan 1 to the last crash date) in every year."""
+        last = kp.get("last_dt")
+        last = date.fromisoformat(str(last)[:10]) if last else None   # fetch() returns dates as text
+        partial = None
+        if last and kp.get("last_year") == last.year and (last.month, last.day) < (12, 1):
+            partial = {"year": last.year, "through": last.isoformat(),
+                       "through_label": f"{last.strftime('%b')} {last.day}"}
+        q = {**p, "m": last.month if last else 12, "d": last.day if last else 31}
+        rows = fetch(f"""SELECT crash_year AS year, count(*) AS crashes, {sev_cols()},
+                                coalesce(sum(persons_injured), 0) AS injured,
+                                count(*) FILTER (WHERE (extract(month FROM crash_dt), extract(day FROM crash_dt))
+                                                       <= (%(m)s, %(d)s)) AS same_period
+                         FROM crash.crashes WHERE {where} AND crash_year IS NOT NULL
+                         GROUP BY 1 ORDER BY 1""", q)
+        full = [r["year"] for r in rows if not (partial and r["year"] == partial["year"])]
+        area_trend = dash.trend({r["year"]: r["crashes"] for r in rows}, full)
+        ka_trend = dash.trend({r["year"]: int(r["k"]) + int(r["a"]) for r in rows}, full)
+        nodes = [h["node"] for h in top]
+        per = {}
+        if nodes:
+            for r in fetch(f"""SELECT node, crash_year AS year, count(*) AS n FROM crash.crashes
+                               WHERE {where} AND node = ANY(%(nodes)s) GROUP BY 1, 2""", {**p, "nodes": nodes}):
+                per.setdefault(r["node"], {})[int(r["year"])] = int(r["n"])
+        hts = [{"node": h["node"], "location": h["location"], "lon": h.get("lon"), "lat": h.get("lat"),
+                "by_year": {str(y): per.get(h["node"], {}).get(y, 0) for y in (r["year"] for r in rows)},
+                "trend": dash.trend(per.get(h["node"], {}), full)} for h in top]
+        ranked = fetch(f"""SELECT year, node, n FROM (
+                               SELECT crash_year AS year, node, count(*) AS n,
+                                      row_number() OVER (PARTITION BY crash_year ORDER BY count(*) DESC, node) AS rn
+                               FROM crash.crashes WHERE {where} AND node IS NOT NULL GROUP BY 1, 2) s
+                           WHERE rn <= 10 ORDER BY year, rn""", p)
+        tnames = node_names(list({r["node"] for r in ranked}))
+        by = {}
+        for r in ranked:
+            by.setdefault(int(r["year"]), []).append({"node": r["node"], "crashes": int(r["n"]),
+                                                      "location": tnames.get(r["node"]) or r["node"]})
+        top3 = {str(y): v[:3] for y, v in by.items()}
+        new = []
+        if len(full) >= 2:
+            first10 = {t["node"] for t in by.get(full[0], [])}
+            new = [f"{t['location']} ({t['crashes']} in {full[-1]})" for t in by.get(full[-1], [])[:3]
+                   if t["node"] not in first10]
+        return {"by_year": rows, "partial": partial, "area_trend": area_trend, "ka_trend": ka_trend,
+                "hotspot_trend": hts, "top3_by_year": top3, "new_in_top3": new}
+
     @mcp.tool(annotations=RW)
     @audited(WRITER)
     def crash_dashboard(juris: str | None = None, place: str | None = None, radius_miles: float | None = None,
@@ -894,8 +943,11 @@ def register(mcp, srv) -> None:
         """Safety DASHBOARD page for a county/city (juris) or place + radius_miles: map (crashes by
         severity + road network through-traffic), top 3 hot spot intersections, critical-and-dangerous
         intersections (network), crash factors and collision types compared with statewide, crashes
-        by hour and weekday, key patterns, and FHWA countermeasure recommendations. Use for 'dashboard',
-        'report', 'overview of crashes in <county>', 'patterns and recommendations'."""
+        by hour and weekday, key patterns, FHWA countermeasure recommendations, and YEAR BY YEAR: crashes
+        per year (same-period comparison for a partial latest year), each top hot spot's crashes per year
+        with a trend (fewer / more / about the same), and the top 3 intersections each year. Use for
+        'dashboard', 'report', 'overview of crashes in <county>', 'patterns and recommendations', and
+        'compare each year', 'has it improved', 'did the hot spots move'."""
         ensure_loaded()
         area = area_filters(juris, place, radius_miles)
         f = {**area, **filters(year_from=year_from, year_to=year_to)}
@@ -906,7 +958,8 @@ def register(mcp, srv) -> None:
                               count(*) FILTER (WHERE node IS NOT NULL) AS at_intersections,
                               count(*) FILTER (WHERE night AND severity IN ('K', 'A')) AS night_ka,
                               count(*) FILTER (WHERE severity IN ('K', 'A')) AS ka,
-                              min(crash_year) AS first_year, max(crash_year) AS last_year
+                              min(crash_year) AS first_year, max(crash_year) AS last_year,
+                              max(crash_dt) AS last_dt
                        FROM crash.crashes WHERE {where}""", p)[0]
         if not kp["crashes"]:
             raise ValueError("no crashes matched; check the county name or years")
@@ -925,10 +978,12 @@ def register(mcp, srv) -> None:
             f"SELECT extract(isodow FROM crash_dt) AS d, count(*) AS n FROM crash.crashes WHERE {where} AND crash_dt IS NOT NULL GROUP BY 1", p)}
         routes = fetch(f"""SELECT route_label AS r, count(*) AS n FROM crash.crashes WHERE {where} AND route_label IS NOT NULL
                            GROUP BY 1 ORDER BY n DESC LIMIT 3""", p)
-        hs = hotspots(3, "count", "intersection", 60, f)
-        names = node_names([h["node"] for h in hs])
-        for h in hs:
+        top8 = hotspots(8, "count", "intersection", 60, f)
+        names = node_names([h["node"] for h in top8])
+        for h in top8:
             h["location"] = names.get(h["node"]) or h["location"]
+        hs = top8[:3]
+        years = year_by_year(where, p, kp, top8)
         g, net = None, None
         if time.time() - t0 < NET_TIME_BUDGET:   # the road network is the slow part: skip it rather than time out
             try:
@@ -967,7 +1022,7 @@ def register(mcp, srv) -> None:
         srv.storage.put_text(map_name, srv.render_map("Crashes and road network", layers, srv.MAP_BASEMAP, subtitle=sc))
         page = dash.render_dashboard({
             "title": title, "scope": sc, "map_file": map_name,
-            "kpis": {**kp, "crashes": n}, "hotspots": hs, "network": net,
+            "kpis": {**kp, "crashes": n}, "hotspots": hs, "network": net, "years": years,
             "factor_rows": factor_rows, "collisions": coll, "by_hour": by_hour, "by_dow": by_dow,
             "patterns": patterns, "recommendations": recs,
             "source": "Source: VDOT crash records (public ArcGIS layer, synced daily). " + network_limits()})
@@ -978,4 +1033,16 @@ def register(mcp, srv) -> None:
                 "top_hotspots": [{"node": h["node"], "location": h["location"], "crashes": h["crashes"]} for h in hs],
                 "critical_and_dangerous": [{"node": r["node"], "location": r["location"], "crashes": r["crashes"],
                                             "score": r["critical_and_dangerous"]} for r in (net or {}).get("top", [])],
-                "patterns": patterns, "recommendations": [r["title"] + ": " + r["measures"] for r in recs]}
+                "patterns": patterns, "recommendations": [r["title"] + ": " + r["measures"] for r in recs],
+                "year_by_year": {
+                    "by_year": [{k: r[k] for k in ("year", "crashes", "k", "a", "injured", "same_period")}
+                                for r in years["by_year"]],
+                    "partial_latest_year": years["partial"], "crashes_trend": years["area_trend"],
+                    "fatal_serious_trend": years["ka_trend"],
+                    "hotspot_trend": [{"node": h["node"], "location": h["location"], "by_year": h["by_year"],
+                                       "trend": h["trend"]["label"], "detail": h["trend"].get("detail", "")}
+                                      for h in years["hotspot_trend"]],
+                    "top3_by_year": years["top3_by_year"], "new_in_top3": years["new_in_top3"]},
+                "note": ("k, a, b, c, o are numbers of CRASHES by their most severe injury, not people. "
+                         "Describe changes over time only from year_by_year; if partial_latest_year is set, "
+                         "compare that year using same_period, not its full-year total.")}

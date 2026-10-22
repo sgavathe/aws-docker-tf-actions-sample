@@ -152,13 +152,18 @@ def flush(cur, rows: list[list], srid: int) -> None:
         for r in rows:
             cp.write_row(r)
     cols = [c for c in COLUMNS if c != "geom_ewkt"]
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols[1:] + ["geom"])
+    changed = cols[1:] + ["geom"]
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in changed)
+    # Rewrite a row only when something in it changed. A daily re-sync brings back ~all records
+    # unchanged; rewriting them anyway (row + every index) cost ~118M Aurora I/Os (~$24) in a day.
     cur.execute(
         f"""INSERT INTO crash.crashes ({', '.join(cols)}, geom)
             SELECT {', '.join(cols[:-1])}, props::jsonb,
                    ST_Transform(ST_SetSRID(ST_GeomFromText(geom_ewkt), {int(srid)}), 4326)
             FROM crash_stage
-            ON CONFLICT (document_nbr) DO UPDATE SET {updates}""")
+            ON CONFLICT (document_nbr) DO UPDATE SET {updates}
+            WHERE ({', '.join('crash.crashes.' + c for c in changed)})
+                  IS DISTINCT FROM ({', '.join('EXCLUDED.' + c for c in changed)})""")
 
 
 def refresh_stats() -> int:

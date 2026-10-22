@@ -91,3 +91,33 @@ def test_dashboard_zoom_links_target_the_map_frame():
     assert ('href="pg-map-1.html#zoom=-77.33000,37.21000,17&amp;label=TEMPLE%20AVE%20%26%20PUDDLEDOCK%20RD" '
             'target="dashmap"') in page
     assert page.count('target="dashmap"') == 1          # no link without valid coordinates
+
+
+def test_trend_labels_use_full_years_and_refuse_small_numbers():
+    years = [2020, 2021, 2022, 2023, 2024, 2025]
+    assert dash.trend({2020: 14, 2021: 12, 2024: 4, 2025: 3}, years)["label"] == "fewer"
+    assert dash.trend({2020: 3, 2021: 4, 2024: 11, 2025: 13}, years)["label"] == "more"
+    assert dash.trend({2020: 7, 2021: 7, 2024: 7, 2025: 8}, years)["label"] == "about the same"
+    assert dash.trend({2020: 1, 2025: 1}, years)["label"] == "too few to tell"
+    t = dash.trend({2020: 10, 2021: 10, 2026: 1}, [2020, 2021])     # partial 2026 left out by the caller
+    assert t["label"] == "about the same" and "2020 vs 10/yr in 2021" in t["detail"]
+
+
+def test_dashboard_year_section_marks_partial_year_and_escapes():
+    evil = "<b>x</b>"
+    page = dash.render_dashboard({
+        "title": "t", "scope": "s", "map_file": "m.html",
+        "kpis": {"crashes": 1, "k": 0, "a": 0, "injured": 0, "at_intersections": 1},
+        "hotspots": [], "network": {}, "factor_rows": [], "collisions": [], "by_hour": [0] * 24,
+        "by_dow": [0] * 7, "patterns": [], "recommendations": [], "source": "",
+        "years": {"by_year": [{"year": 2025, "crashes": 70, "k": 1, "a": 2, "injured": 3, "same_period": 50},
+                              {"year": 2026, "crashes": 43, "k": 0, "a": 1, "injured": 2, "same_period": 43}],
+                  "partial": {"year": 2026, "through": "2026-09-27", "through_label": "Sep 27"},
+                  "area_trend": {"label": "fewer", "detail": "x"}, "ka_trend": None,
+                  "hotspot_trend": [{"node": "1", "location": evil, "lon": -77.3, "lat": 37.2,
+                                     "by_year": {"2025": 13, "2026": 9}, "trend": {"label": "more", "detail": "d"}}],
+                  "top3_by_year": {"2026": [{"node": "1", "location": evil, "crashes": 9}]},
+                  "new_in_top3": [evil]}})
+    assert "2026*" in page and "Jan 1 - Sep 27 only" in page and "data through Sep 27" in page
+    assert evil not in page and "&lt;b&gt;x&lt;/b&gt;" in page
+    assert "Fatal crashes (K)" in page

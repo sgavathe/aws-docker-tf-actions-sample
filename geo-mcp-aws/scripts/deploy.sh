@@ -68,8 +68,9 @@ cat <<EOF
 
 Deployed: $SITE
 Next:
-  1. Create users (no self sign-up):   geo-mcp-aws/scripts/users.sh analyst writer
-  2. Crashes sync daily from VDOT (05:17 ET). First sync now:
+  1. Create users (sign-up page is on if self_signup=true):   geo-mcp-aws/scripts/users.sh analyst writer
+  2. VDOT crash sync is $( [ "${TF_VAR_crash_sync_enabled:-false}" = true ] && echo "daily at 05:17 ET" || echo "OFF (TF_VAR_crash_sync_enabled=true to turn on)" ).
+     Empty database only - first load (a full pull; reruns rewrite only changed rows):
        aws lambda invoke --function-name geo-devops-demo-geomcp-ingest --invocation-type Event --payload '{"force":true}' --cli-binary-format raw-in-base64-out /dev/null
   3. GitHub secret AWS_GEO_MCP_ROLE_ARN = $(tf output -raw github_deploy_role_arn)
      GitHub variable GEO_MCP_URL        = $SITE
