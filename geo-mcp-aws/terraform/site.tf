@@ -39,7 +39,7 @@ locals {
   site_url           = var.attach_domain ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.main.domain_name}"
 }
 
-# tfsec:ignore:aws-cloudfront-enable-logging  (access logs cost money; demo only)
+# tfsec:ignore:aws-cloudfront-enable-logging  (standard logging v2 to CloudWatch Logs: access_logs.tf)
 # tfsec:ignore:aws-cloudfront-enable-waf      (WAF is ~$6+/month; demo only)
 resource "aws_cloudfront_distribution" "main" {
   enabled         = true
