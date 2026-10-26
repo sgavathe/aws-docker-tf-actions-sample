@@ -102,7 +102,15 @@ jobs:
             --skip-dirs "**/node_modules,**/.venv,**/bin,**/obj,**/dist,**/.terraform" .
 
       - name: Build the Lambda image
-        run: docker build -f serverless/lambda/Dockerfile -t kev-scan/lambda:ci backend
+        run: |
+          # public.ecr.aws rate-limits anonymous pulls per IP, and GitHub runners share IPs,
+          # so a 429 here is usually someone else's traffic. Retry with backoff.
+          for wait in 0 60 180; do
+            sleep "$wait"
+            docker build -f serverless/lambda/Dockerfile -t kev-scan/lambda:ci backend && exit 0
+            echo "::warning::Image build failed; retrying in case it was an ECR Public rate limit"
+          done
+          exit 1
 
       - name: Scan the Lambda image (Trivy image)
         run: trivy image --scanners vuln --format json --output out/lambda-image.json --quiet kev-scan/lambda:ci
