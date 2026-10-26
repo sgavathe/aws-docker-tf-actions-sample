@@ -150,7 +150,11 @@ jobs:
               sys.exit(1)
           EOF
 
-      - uses: actions/upload-artifact@v4
+      # A copy for download from the run page. GitHub's artifact service has outages
+      # ("Request timeout ... CreateArtifact"); that must not block publishing the graph below.
+      - name: Keep a copy as a run artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: ci-graph-${{ matrix.region.id }}
           path: ${{ env.OUT }}
