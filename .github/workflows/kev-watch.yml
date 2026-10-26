@@ -101,6 +101,11 @@ jobs:
           trivy fs --scanners vuln --include-dev-deps --format json --output out/fs.json --quiet \
             --skip-dirs "**/node_modules,**/.venv,**/bin,**/obj,**/dist,**/.terraform" .
 
+      - name: Login to Amazon ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       - name: Build the Lambda image
         run: docker build -f serverless/lambda/Dockerfile -t kev-scan/lambda:ci backend
 

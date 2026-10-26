@@ -5,8 +5,8 @@ name: Prowler AWS Scan
 #
 # Results:
 #   - Run summary page: per-severity counts of failing checks
-#   - Artifact "prowler-aws": HTML report (open in a browser), CSV, OCSF JSON
-#   - Security -> Code scanning: findings from the SARIF upload
+#   - Run artifact: HTML report (open in a browser), CSV, OCSF JSON
+#   (No Code scanning upload: Prowler 5.x writes SARIF only for the iac provider.)
 #
 # Setup (once):
 #   1. terraform -chdir=infra/prowler-role init && terraform -chdir=infra/prowler-role apply
@@ -38,7 +38,6 @@ jobs:
     permissions:
       id-token: write  # OIDC token for AWS
       contents: read
-      security-events: write  # SARIF upload to Code scanning
       actions: read
     env:
       AWS_REGION: us-east-1
@@ -67,9 +66,8 @@ jobs:
         with:
           provider: aws
           image-tag: "5.44.0"
-          output-formats: html csv json-ocsf sarif
-          upload-sarif: true
-          sarif-category: prowler-aws
+          # SARIF is only supported for the iac provider; aws gets html/csv/ocsf.
+          output-formats: html csv json-ocsf
           # The site lives in us-east-1; IAM and other global services are
           # always scanned. Drop --region to scan every enabled region.
           flags: --region ${{ env.AWS_REGION }} --severity ${{ env.SEVERITY }}
